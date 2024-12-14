@@ -14,3 +14,7 @@ lazy_static = "1.4"
 [[example]]
 name = "video_request"
 path = "src/examples/video_request.rs"
+
+[[example]]
+name = "twice_request"
+path = "src/examples/twice_request.rs"

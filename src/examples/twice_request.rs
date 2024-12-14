@@ -14,14 +14,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 创建 HTTP 客户端
     let client = Client::new();
-    let video_url = "https://media.w3.org/2010/05/sintel/trailer.mp4";
-
-    // 第一次请求：获取前 5MB
-    println!("\n第一次请求:0-1MB");
+    // let video_url = "https://www.w3school.com.cn/i/movie.mp4";
+    // let video_url = "https://media.w3.org/2010/05/sintel/trailer.mp4";
+    let video_url = "http://aliuwmp3.changba.com/userdata/video/45F6BD5E445E4C029C33DC5901307461.mp4";
+    
+    // 第一次请求：获取前 1MB
+    println!("\n第一次请求: 0-1MB");
     let req1 = Request::builder()
         .method("GET")
         .uri("http://127.0.0.1:8080")
-        .header("Range", "bytes=0-10240")
         .header("X-Original-Url", video_url)
         .body(Body::empty())?;
 
@@ -32,12 +33,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 等待一秒
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-    // 第二次请求：获取接下来的 5MB
-    println!("\n第二次请求:1MB-10MB");
+    // 第二次请求：相同的范围
+    println!("\n第二次请求: 0-1MB (从缓存获取)");
     let req2 = Request::builder()
         .method("GET")
         .uri("http://127.0.0.1:8080")
-        .header("Range", "bytes=10240-0")
         .header("X-Original-Url", video_url)
         .body(Body::empty())?;
 

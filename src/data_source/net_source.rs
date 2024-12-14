@@ -22,6 +22,10 @@ impl NetSource {
         let resp: Response<hyper::Body> = self.client.request(data_request).await?;
 
         if !resp.status().is_success() {
+            // 打印错误信息？
+            println!("HTTP request failed: {}", resp.status());
+            println!("HTTP request failed: {:#?}", resp.headers());
+            println!("HTTP request failed: {:#?}", resp.body());
             return Err(ProxyError::Request("HTTP request failed".to_string()));
         }
 
