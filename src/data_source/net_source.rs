@@ -1,6 +1,6 @@
-use crate::utils::error::ProxyError;
-use hyper::{Client, Response};
+use crate::utils::error::{Result, ProxyError};
 use crate::data_request::DataRequest;
+use hyper::{Client, Response};
 
 pub struct NetSource {
     url: String,
@@ -17,12 +17,12 @@ impl NetSource {
         }
     }
 
-    pub async fn download_data(&self) -> Result<Vec<u8>, ProxyError> {
+    pub async fn download_data(&self) -> Result<Vec<u8>> {
         let data_request = DataRequest::new_request_with_range(&self.url, &self.range);
         let resp: Response<hyper::Body> = self.client.request(data_request).await?;
 
         if !resp.status().is_success() {
-            return Err(ProxyError::Data("HTTP request failed".to_string()));
+            return Err(ProxyError::Request("HTTP request failed".to_string()));
         }
 
         let bytes = hyper::body::to_bytes(resp.into_body()).await?;

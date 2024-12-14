@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let video_url = "http://www.w3school.com.cn/i/movie.mp4";
 
     // 第一次请求：获取前 5MB
-    println!("\n第一次请求：0-1MB");
+    println!("\n第一次请求:0-1MB");
     let req1 = Request::builder()
         .method("GET")
         .uri("http://127.0.0.1:8080")
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     // 第二次请求：获取接下来的 5MB
-    println!("\n第二次请求：1MB-10MB");
+    println!("\n第二次请求:1MB-10MB");
     let req2 = Request::builder()
         .method("GET")
         .uri("http://127.0.0.1:8080")

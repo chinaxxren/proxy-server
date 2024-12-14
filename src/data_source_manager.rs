@@ -1,12 +1,12 @@
-use hyper::{Request, Response, Body};
-use crate::cache::CacheManager;
 use crate::cache::unit_pool::UnitPool;
+use crate::cache::CacheManager;
+use crate::data_request::DataRequest;
 use crate::data_storage::DataStorage;
 use crate::utils::error::{ProxyError, Result};
 use crate::utils::range::parse_range;
-use std::sync::Arc;
-use crate::data_request::DataRequest;
 use hyper::header::{HeaderMap, HeaderValue};
+use hyper::{Body, Request, Response};
+use std::sync::Arc;
 
 pub struct DataSourceManager {
     unit_pool: UnitPool,
@@ -29,7 +29,7 @@ impl DataSourceManager {
     pub async fn process_request(&self, req: Request<Body>) -> Result<Response<Body>> {
         // 创建请求对象
         let data_request = DataRequest::new(&req)?;
-        
+
         // 使用带缓存的请求处理
         self.process_request_with_cache(&data_request).await
     }
@@ -42,10 +42,13 @@ impl DataSourceManager {
 
         // 检查缓存状态
         if self.unit_pool.is_fully_cached(url, range).await? {
+            println!("完全缓存");
             Ok(DataSourceType::FileOnly)
         } else if self.unit_pool.is_partially_cached(url, range).await? {
+            println!("部分缓存");
             Ok(DataSourceType::Mixed)
         } else {
+            println!("网络缓存");
             Ok(DataSourceType::NetworkOnly)
         }
     }
@@ -54,7 +57,7 @@ impl DataSourceManager {
         // 实现简单的网络可用性检查
         let client = hyper::Client::new();
         let uri = hyper::Uri::from_static("http://www.baidu.com");
-        
+
         match client.get(uri).await {
             Ok(resp) => {
                 if resp.status().is_success() {
@@ -62,7 +65,7 @@ impl DataSourceManager {
                 } else {
                     Ok(false)
                 }
-            },
+            }
             Err(_) => {
                 println!("网络连接检查失败");
                 Ok(false)
@@ -70,7 +73,12 @@ impl DataSourceManager {
         }
     }
 
-    async fn merge_data(&self, cached_data: Vec<u8>, downloaded_data: Vec<u8>, range: &str) -> Result<Vec<u8>> {
+    async fn merge_data(
+        &self,
+        cached_data: Vec<u8>,
+        downloaded_data: Vec<u8>,
+        range: &str,
+    ) -> Result<Vec<u8>> {
         let (start, end) = parse_range(range)?;
         let total_size = end - start + 1;
         let mut merged_data = vec![0; total_size as usize];
@@ -138,7 +146,8 @@ impl DataSourceManager {
         }
 
         // 检查数据长度是否合理
-        if data.len() > 1024 * 1024 * 100 { // 100MB
+        if data.len() > 1024 * 1024 * 100 {
+            // 100MB
             return Err(ProxyError::Data("数据大小超出限制".to_string()));
         }
 
@@ -149,24 +158,28 @@ impl DataSourceManager {
         let url = req.get_url();
         let range = req.get_range();
 
+        println!("url: {}", url);
+        println!("range: {}", range);
+
         match self.select_data_source(url, range).await? {
             // 文件缓存
             DataSourceType::FileOnly => {
                 // 完整缓存处理
                 let file_source = self.storage.get_file_source(url, range).await?;
                 let data = file_source.read_data().await?;
-                
+
                 let headers = self.build_response_headers(range, false);
-                let mut response = Response::builder()
-                    .status(206);
-                
+                let mut response = Response::builder().status(206);
+
                 // 添加所有响应头
                 for (key, value) in headers.iter() {
                     response = response.header(key.as_str(), value);
                 }
-                
+
                 response = response.header("Content-Range", format!("bytes {}", range));
-                let response = response.body(Body::from(data)).map_err(|e| ProxyError::Response(e.to_string()))?;
+                let response = response
+                    .body(Body::from(data))
+                    .map_err(|e| ProxyError::Response(e.to_string()))?;
                 Ok(response)
             }
             // 混合缓存
@@ -174,41 +187,43 @@ impl DataSourceManager {
                 // 部分缓存处理
                 let cached_data = self.storage.get_cached_data(url, range).await?;
                 let net_source = self.storage.get_net_source(url, range).await?;
-                
+
                 match net_source.download_data().await {
                     Ok(downloaded_data) => {
-                        let merged_data = self.merge_data(cached_data, downloaded_data, range).await?;
+                        let merged_data =
+                            self.merge_data(cached_data, downloaded_data, range).await?;
                         self.unit_pool.write_cache(url, range, &merged_data).await?;
                         self.cache_manager.merge_files_if_needed(url).await?;
-                        
+
                         let headers = self.build_response_headers(range, true);
-                        let mut response = Response::builder()
-                            .status(206);
-                        
+                        let mut response = Response::builder().status(206);
+
                         for (key, value) in headers.iter() {
                             response = response.header(key.as_str(), value);
                         }
-                        
+
                         response = response.header("Content-Range", format!("bytes {}", range));
-                        let response = response.body(Body::from(merged_data)).map_err(|e| ProxyError::Response(e.to_string()))?;
+                        let response = response
+                            .body(Body::from(merged_data))
+                            .map_err(|e| ProxyError::Response(e.to_string()))?;
                         Ok(response)
                     }
                     Err(_) => {
                         // 网络错误时尝试使用缓存数据
                         let headers = self.build_response_headers(range, true);
-                        let mut response = Response::builder()
-                            .status(206);
-                        
+                        let mut response = Response::builder().status(206);
+
                         for (key, value) in headers.iter() {
                             response = response.header(key.as_str(), value);
                         }
-                        
+
                         response = response
                             .header("Content-Range", format!("bytes {}", range))
                             .header("X-Cache-Status", "partial");
-                        
-                        let response =
-                         response.body(Body::from(cached_data)).map_err(|e| ProxyError::Response(e.to_string()))?;
+
+                        let response = response
+                            .body(Body::from(cached_data))
+                            .map_err(|e| ProxyError::Response(e.to_string()))?;
                         Ok(response)
                     }
                 }
@@ -223,19 +238,20 @@ impl DataSourceManager {
                         self.unit_pool.write_cache(url, range, &data).await?;
                         let (_, end) = parse_range(range)?;
                         self.validate_data(&data, end + 1).await?;
-                        
+
                         let headers = self.build_response_headers(range, false);
-                        let mut response = Response::builder()
-                            .status(200);
-                        
+                        let mut response = Response::builder().status(200);
+
                         for (key, value) in headers.iter() {
                             response = response.header(key.as_str(), value);
                         }
-                        
-                        let response = response.body(Body::from(data)).map_err(|e| ProxyError::Response(e.to_string()))?;
+
+                        let response = response
+                            .body(Body::from(data))
+                            .map_err(|e| ProxyError::Response(e.to_string()))?;
                         Ok(response)
                     }
-                    Err(e) => Err(ProxyError::Network(format!("下载失败: {}", e)))
+                    Err(e) => Err(ProxyError::Network(format!("下载失败: {}", e))),
                 }
             }
         }
@@ -247,14 +263,14 @@ impl DataSourceManager {
             "Content-Type",
             HeaderValue::from_static("application/octet-stream"),
         );
-        
+
         if !range.is_empty() {
             headers.insert("Accept-Ranges", HeaderValue::from_static("bytes"));
             if is_partial {
                 headers.insert("X-Cache-Status", HeaderValue::from_static("partial"));
             }
         }
-        
+
         headers
     }
 }
