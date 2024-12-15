@@ -5,8 +5,15 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-hyper = { version = "0.14", features = ["full"] }
-rustls = "0.20"
+hyper = { version = "0.14", features = [
+    "client",
+    "runtime",
+    "http1",
+    "http2",
+    "server",
+] }
+hyper-tls = "0.5" # 添加 hyper-tls 依赖
+
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 lazy_static = "1.4"
@@ -18,3 +25,15 @@ path = "src/examples/video_request.rs"
 [[example]]
 name = "twice_request"
 path = "src/examples/twice_request.rs"
+
+[[example]]
+name = "onice_request"
+path = "src/examples/onice_request.rs"
+
+[[example]]
+name = "data_request"
+path = "src/examples/data_request.rs"
+
+[[example]]
+name = "https_request"
+path = "src/examples/https_request.rs"

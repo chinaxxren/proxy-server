@@ -1,5 +1,5 @@
 use crate::cache::unit_pool::UnitPool;
-use crate::utils::error::{ProxyError, Result};
+use crate::utils::error::Result;
 use crate::utils::parse_range;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};

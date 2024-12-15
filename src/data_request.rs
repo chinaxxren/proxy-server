@@ -1,4 +1,5 @@
 use crate::utils::error::{ProxyError, Result};
+use crate::log_info;
 use hyper::{
     header::{HeaderMap, HeaderValue, RANGE},
     Request,
@@ -18,17 +19,17 @@ impl DataRequest {
             .headers()
             .get(RANGE)
             .and_then(|r| r.to_str().ok())
-            .unwrap_or("")
+            .unwrap_or("bytes=0-")
             .to_string();
-
-        if !range.is_empty() && !range.starts_with("bytes=") {
-            return Err(ProxyError::Range("无效的Range格式".to_string()));
-        }
 
         let mut headers = HeaderMap::new();
         for (key, value) in req.headers() {
+            if key.to_string() == "x-original-url" || key.to_string() == "host" {
+                continue;
+            }
+
             if let Ok(v) = HeaderValue::from_bytes(value.as_bytes()) {
-                println!("key: {}, value: {}", key, value);
+                log_info!("Request", "key: {}, value: {}", key, value.to_str().unwrap_or(""));
                 headers.insert(key, v);
             }
         }
@@ -51,8 +52,9 @@ impl DataRequest {
 
         builder = builder
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-            .header("Accept", "*/*");
-
+            .header("Accept", "*/*")
+            .header("Connection", "keep-alive"); 
+        
         builder
             .body(hyper::Body::empty())
             .unwrap_or_else(|_| Request::new(hyper::Body::empty()))

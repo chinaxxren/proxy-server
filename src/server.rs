@@ -2,6 +2,7 @@ use hyper::server::Server;
 use hyper::service::{make_service_fn, service_fn};
 use crate::request_handler::handle_request;
 use crate::utils::error::{Result, ProxyError};
+use crate::log_info;
 use std::net::SocketAddr;
 
 pub async fn run_server() -> Result<()> {
@@ -19,7 +20,7 @@ pub async fn run_server() -> Result<()> {
     // 创建并启动服务器
     let server = Server::bind(&addr).serve(make_svc);
 
-    println!("代理服务器正在运行在 http://{}", addr);
+    log_info!("Server", "代理服务器正在运行在 http://{}", addr);
 
     // 等待服务器运行
     server.await.map_err(|e| ProxyError::Http(e))

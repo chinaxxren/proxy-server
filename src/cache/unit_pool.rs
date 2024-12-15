@@ -68,7 +68,7 @@ impl UnitPool {
         Ok(())
     }
 
-    pub async fn write_cache(&self, url: &str, range: &str, data: &[u8]) -> Result<()> {
+    pub async fn write_cache(&self, url: &str, range: &str, data: &[u8]) -> Result<(u64, u64)> {
         let file_path = CONFIG.get_cache_path(url);
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -81,7 +81,8 @@ impl UnitPool {
         file.write_all(data).await?;
 
         self.update_cache(url, range).await?;
-        Ok(())
+        
+        Ok(requested)
     }
 
     pub async fn merge_range(&self, url: &str, ranges: &[(u64, u64)]) -> Result<()> {

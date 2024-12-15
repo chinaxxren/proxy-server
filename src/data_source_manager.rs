@@ -4,6 +4,7 @@ use crate::data_request::DataRequest;
 use crate::data_storage::DataStorage;
 use crate::utils::error::{ProxyError, Result};
 use crate::utils::range::parse_range;
+use crate::{log_info, log_error};
 use hyper::header::{HeaderMap, HeaderValue};
 use hyper::{Body, Request, Response};
 use std::sync::Arc;
@@ -42,13 +43,13 @@ impl DataSourceManager {
 
         // 检查缓存状态
         if self.unit_pool.is_fully_cached(url, range).await? {
-            println!("完全缓存");
+            log_info!("Cache", "完全缓存");
             Ok(DataSourceType::FileOnly)
         } else if self.unit_pool.is_partially_cached(url, range).await? {
-            println!("部分缓存");
+            log_info!("Cache", "部分缓存");
             Ok(DataSourceType::Mixed)
         } else {
-            println!("网络缓存");
+            log_info!("Cache", "网络缓存");
             Ok(DataSourceType::NetworkOnly)
         }
     }
@@ -67,7 +68,7 @@ impl DataSourceManager {
                 }
             }
             Err(_) => {
-                println!("网络连接检查失败");
+                log_error!("Network", "网络连接检查失败");
                 Ok(false)
             }
         }
@@ -115,7 +116,7 @@ impl DataSourceManager {
     }
 
     async fn _retry_download(&self, url: &str, range: &str) -> Result<Vec<u8>> {
-        let net_source = self.storage.get_net_source(url, range).await?;
+        let mut net_source = self.storage.get_net_source(url, range).await?;
         net_source.download_data().await
     }
 
@@ -158,9 +159,10 @@ impl DataSourceManager {
         let url = req.get_url();
         let range = req.get_range();
 
-        println!("url: {}", url);
-        println!("range: {}", range);
+        log_info!("Request", "url: {}", url);
+        log_info!("Request", "range: {}", range);
 
+        // 原有的 Range 请求处理逻辑
         match self.select_data_source(url, range).await? {
             // 文件缓存
             DataSourceType::FileOnly => {
@@ -186,7 +188,7 @@ impl DataSourceManager {
             DataSourceType::Mixed => {
                 // 部分缓存处理
                 let cached_data = self.storage.get_cached_data(url, range).await?;
-                let net_source = self.storage.get_net_source(url, range).await?;
+                let mut net_source = self.storage.get_net_source(url, range).await?;
 
                 match net_source.download_data().await {
                     Ok(downloaded_data) => {
@@ -232,14 +234,13 @@ impl DataSourceManager {
             // 网络缓存
             DataSourceType::NetworkOnly => {
                 // 无缓存处理
-                let net_source = self.storage.get_net_source(url, range).await?;
+                let mut net_source = self.storage.get_net_source(url, range).await?;
                 match net_source.download_data().await {
                     Ok(data) => {
-                        self.unit_pool.write_cache(url, range, &data).await?;
-                        let (_, end) = parse_range(range)?;
-                        self.validate_data(&data, end + 1).await?;
+                        let (start, end) = self.unit_pool.write_cache(url, range, &data).await?;
+                        self.validate_data(&data, end + 1 - start).await?;
 
-                        let headers = self.build_response_headers(range, false);
+                        let headers =  self.build_response_headers(range, false);
                         let mut response = Response::builder().status(200);
 
                         for (key, value) in headers.iter() {
