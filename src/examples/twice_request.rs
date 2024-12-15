@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let req1 = Request::builder()
         .method("GET")
         .uri("http://127.0.0.1:8080")
-        .header("Range", "bytes=0-1023")
+        // .header("Range", "bytes=0-1023")
         .header("X-Original-Url", video_url)
         .body(Body::empty())?;
 
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let req2 = Request::builder()
         .method("GET")
         .uri("http://127.0.0.1:8080")
-        .header("Range", "bytes=0-1023")
+        // .header("Range", "bytes=0-1023")
         .header("X-Original-Url", video_url)
         .body(Body::empty())?;
 

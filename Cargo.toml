@@ -12,11 +12,14 @@ hyper = { version = "0.14", features = [
     "http2",
     "server",
 ] }
-hyper-tls = "0.5" # 添加 hyper-tls 依赖
-
+hyper-tls = "0.5"
+http-body-util = "0.1"
+pin-project-lite = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 lazy_static = "1.4"
+futures = "0.3"
+bytes = "1.5.0"
 
 [[example]]
 name = "video_request"

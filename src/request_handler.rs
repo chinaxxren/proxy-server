@@ -1,4 +1,5 @@
 use hyper::{Request, Response};
+use crate::log_error;
 use crate::utils::error::{ProxyError, Result};
 use crate::data_source_manager::DataSourceManager;
 
@@ -11,6 +12,7 @@ pub async fn handle_request(req: Request<hyper::Body>) -> Result<Response<hyper:
     match manager.process_request(req).await {
         Ok(response) => Ok(response),
         Err(e) => {
+            log_error!("RequestHandler", "请求处理失败: {}", e);
             // 统一错误处理
             let error_msg = format!("请求处理失败: {}", e);
             let response = Response::builder()

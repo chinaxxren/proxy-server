@@ -11,12 +11,20 @@ pub enum LogLevel {
 pub struct Logger;
 
 impl Logger {
+    fn format_time(duration: std::time::Duration) -> String {
+        let total_secs = duration.as_secs();
+        let hours = (total_secs / 3600) % 24;
+        let minutes = (total_secs / 60) % 60;
+        let seconds = total_secs % 60;
+        
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    }
+
     #[cfg(debug_assertions)]
     pub fn log<D: fmt::Display>(level: LogLevel, module: &str, message: D) {
-        let timestamp = SystemTime::now()
+        let duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
+            .unwrap();
             
         let level_str = match level {
             LogLevel::INFO => "\x1b[32mINFO\x1b[0m",   // 绿色
@@ -27,7 +35,7 @@ impl Logger {
 
         println!(
             "[{} {} {}] {}",
-            timestamp,
+            Self::format_time(duration),
             level_str,
             module,
             message

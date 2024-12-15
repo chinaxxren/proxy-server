@@ -6,6 +6,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::fs;
 use crate::config::CONFIG;
 use tokio::io::AsyncSeekExt;
+use std::path::PathBuf;
 
 pub struct DataStorage {
     unit_pool: UnitPool,
@@ -16,6 +17,10 @@ impl DataStorage {
         Self {
             unit_pool: UnitPool::new(),
         }
+    }
+
+    pub fn get_cache_path(&self, url: &str) -> PathBuf {
+        CONFIG.get_cache_path(url)
     }
 
     pub async fn get_file_source(&self, url: &str, range: &str) -> Result<FileSource> {

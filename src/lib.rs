@@ -8,5 +8,8 @@ pub mod config;
 pub mod utils;
 pub mod server;
 pub mod request_handler;
+pub mod stream_processor;
+
+pub use utils::logger::*;
 
 

@@ -1,5 +1,5 @@
-use crate::utils::error::{ProxyError, Result};
 use crate::log_info;
+use crate::utils::error::{ProxyError, Result};
 use hyper::{
     header::{HeaderMap, HeaderValue, RANGE},
     Request,
@@ -29,7 +29,12 @@ impl DataRequest {
             }
 
             if let Ok(v) = HeaderValue::from_bytes(value.as_bytes()) {
-                log_info!("Request", "key: {}, value: {}", key, value.to_str().unwrap_or(""));
+                log_info!(
+                    "Request",
+                    "key: {}, value: {}",
+                    key,
+                    value.to_str().unwrap_or("")
+                );
                 headers.insert(key, v);
             }
         }
@@ -47,14 +52,15 @@ impl DataRequest {
         if !range.is_empty() {
             if let Ok(value) = HeaderValue::from_str(range) {
                 builder = builder.header(RANGE, value);
+                log_info!("Request", "Range header: {}", range);
             }
         }
 
         builder = builder
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
             .header("Accept", "*/*")
-            .header("Connection", "keep-alive"); 
-        
+            .header("Connection", "keep-alive");
+
         builder
             .body(hyper::Body::empty())
             .unwrap_or_else(|_| Request::new(hyper::Body::empty()))
@@ -77,12 +83,10 @@ fn original_url(req: &Request<hyper::Body>) -> Result<String> {
     let original_url = req.headers().get("X-Original-Url");
     // 获取 X-Original-Url 头部
     match original_url {
-        Some(value) => {
-            Ok(value
-                .to_str()
-                .map_err(|_| ProxyError::Request("X-Original-Url 头部 格式错误".to_string()))?
-                .to_string())
-        }
+        Some(value) => Ok(value
+            .to_str()
+            .map_err(|_| ProxyError::Request("X-Original-Url 头部 格式错误".to_string()))?
+            .to_string()),
         None => {
             return Err(ProxyError::Request("无效的URL".to_string()));
         }

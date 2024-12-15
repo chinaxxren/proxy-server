@@ -2,12 +2,17 @@ use crate::cache::unit_pool::UnitPool;
 use crate::cache::CacheManager;
 use crate::data_request::DataRequest;
 use crate::data_storage::DataStorage;
+use crate::stream_processor::StreamProcessor;
 use crate::utils::error::{ProxyError, Result};
-use crate::utils::range::parse_range;
-use crate::{log_info, log_error};
+use crate::{log_error, log_info};
 use hyper::header::{HeaderMap, HeaderValue};
 use hyper::{Body, Request, Response};
 use std::sync::Arc;
+use tokio::fs::File;
+use tokio::sync::Mutex;
+use tokio::time::{interval, Duration};
+use bytes::Bytes;
+use futures::StreamExt;
 
 pub struct DataSourceManager {
     unit_pool: UnitPool,
@@ -20,6 +25,21 @@ impl DataSourceManager {
         let unit_pool = UnitPool::new();
         let storage = DataStorage::new();
         let cache_manager = CacheManager::new(Arc::new(unit_pool.clone()));
+
+        // 启动定期清理缓存的任务
+        let cache_manager_clone = cache_manager.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(3600 * 24)); // 每24小时清理一次
+            loop {
+                interval.tick().await;
+                if let Err(e) = cache_manager_clone.clean_cache().await {
+                    log_error!("Cache", "清理缓存失败: {}", e);
+                } else {
+                    log_info!("Cache", "缓存清理完成");
+                }
+            }
+        });
+
         Self {
             unit_pool,
             storage,
@@ -49,7 +69,7 @@ impl DataSourceManager {
             log_info!("Cache", "部分缓存");
             Ok(DataSourceType::Mixed)
         } else {
-            log_info!("Cache", "网络缓存");
+            log_info!("Cache", "网络数据");
             Ok(DataSourceType::NetworkOnly)
         }
     }
@@ -74,87 +94,6 @@ impl DataSourceManager {
         }
     }
 
-    async fn merge_data(
-        &self,
-        cached_data: Vec<u8>,
-        downloaded_data: Vec<u8>,
-        range: &str,
-    ) -> Result<Vec<u8>> {
-        let (start, end) = parse_range(range)?;
-        let total_size = end - start + 1;
-        let mut merged_data = vec![0; total_size as usize];
-
-        // 复制缓存数据
-        if !cached_data.is_empty() {
-            merged_data[..cached_data.len()].copy_from_slice(&cached_data);
-        }
-
-        // 复制下载的数据
-        if !downloaded_data.is_empty() {
-            let offset = cached_data.len();
-            merged_data[offset..].copy_from_slice(&downloaded_data);
-        }
-
-        Ok(merged_data)
-    }
-
-    async fn _handle_network_error(&self, url: &str, range: &str) -> Result<Vec<u8>> {
-        // 尝试从缓存读取部分数据
-        if let Ok(cached_data) = self.storage.get_cached_data(url, range).await {
-            return Ok(cached_data);
-        }
-
-        // 如果无法从缓存读取，重试网络请求
-        for retry in 0..3 {
-            if let Ok(data) = self._retry_download(url, range).await {
-                return Ok(data);
-            }
-            tokio::time::sleep(tokio::time::Duration::from_secs(1 << retry)).await;
-        }
-
-        Err(ProxyError::Network("无法获取数据".to_string()))
-    }
-
-    async fn _retry_download(&self, url: &str, range: &str) -> Result<Vec<u8>> {
-        let mut net_source = self.storage.get_net_source(url, range).await?;
-        net_source.download_data().await
-    }
-
-    async fn validate_data(&self, data: &[u8], expected_size: u64) -> Result<()> {
-        // 检查数据大小
-        if data.len() as u64 != expected_size {
-            return Err(ProxyError::Data("数据大小不匹配".to_string()));
-        }
-
-        // 检查数据完整性
-        if !self.verify_data_integrity(data).await? {
-            return Err(ProxyError::Data("数据完整性验证失败".to_string()));
-        }
-
-        Ok(())
-    }
-
-    async fn verify_data_integrity(&self, data: &[u8]) -> Result<bool> {
-        // 实现基本的数据完整性检查
-        if data.is_empty() {
-            return Err(ProxyError::Data("数据为空".to_string()));
-        }
-
-        // 检查数据是否全为零
-        let zero_chunk = data.chunks(1024).any(|chunk| chunk.iter().all(|&x| x == 0));
-        if zero_chunk {
-            return Err(ProxyError::Data("数据包含无效块".to_string()));
-        }
-
-        // 检查数据长度是否合理
-        if data.len() > 1024 * 1024 * 100 {
-            // 100MB
-            return Err(ProxyError::Data("数据大小超出限制".to_string()));
-        }
-
-        Ok(true)
-    }
-
     async fn process_request_with_cache(&self, req: &DataRequest) -> Result<Response<Body>> {
         let url = req.get_url();
         let range = req.get_range();
@@ -162,97 +101,188 @@ impl DataSourceManager {
         log_info!("Request", "url: {}", url);
         log_info!("Request", "range: {}", range);
 
-        // 原有的 Range 请求处理逻辑
         match self.select_data_source(url, range).await? {
             // 文件缓存
             DataSourceType::FileOnly => {
-                // 完整缓存处理
                 let file_source = self.storage.get_file_source(url, range).await?;
-                let data = file_source.read_data().await?;
+                let stream = file_source.read_stream().await?;
+                
+                // 创建 channel
+                let (mut sender, body) = Body::channel();
+                
+                // 启动异步任务处理流
+                tokio::spawn(async move {
+                    let mut stream = Box::pin(stream);
+                    while let Some(chunk) = stream.next().await {
+                        match chunk {
+                            Ok(data) => {
+                                if let Err(e) = sender.send_data(data).await {
+                                    log_error!("Stream", "发送数据失败: {}", e);
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                log_error!("Stream", "读取数据失败: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                });
 
                 let headers = self.build_response_headers(range, false);
                 let mut response = Response::builder().status(206);
 
-                // 添加所有响应头
                 for (key, value) in headers.iter() {
                     response = response.header(key.as_str(), value);
                 }
 
                 response = response.header("Content-Range", format!("bytes {}", range));
                 let response = response
-                    .body(Body::from(data))
+                    .body(body)
                     .map_err(|e| ProxyError::Response(e.to_string()))?;
                 Ok(response)
-            }
-            // 混合缓存
-            DataSourceType::Mixed => {
-                // 部分缓存处理
-                let cached_data = self.storage.get_cached_data(url, range).await?;
-                let mut net_source = self.storage.get_net_source(url, range).await?;
-
-                match net_source.download_data().await {
-                    Ok(downloaded_data) => {
-                        let merged_data =
-                            self.merge_data(cached_data, downloaded_data, range).await?;
-                        self.unit_pool.write_cache(url, range, &merged_data).await?;
-                        self.cache_manager.merge_files_if_needed(url).await?;
-
-                        let headers = self.build_response_headers(range, true);
-                        let mut response = Response::builder().status(206);
-
-                        for (key, value) in headers.iter() {
-                            response = response.header(key.as_str(), value);
-                        }
-
-                        response = response.header("Content-Range", format!("bytes {}", range));
-                        let response = response
-                            .body(Body::from(merged_data))
-                            .map_err(|e| ProxyError::Response(e.to_string()))?;
-                        Ok(response)
-                    }
-                    Err(_) => {
-                        // 网络错误时尝试使用缓存数据
-                        let headers = self.build_response_headers(range, true);
-                        let mut response = Response::builder().status(206);
-
-                        for (key, value) in headers.iter() {
-                            response = response.header(key.as_str(), value);
-                        }
-
-                        response = response
-                            .header("Content-Range", format!("bytes {}", range))
-                            .header("X-Cache-Status", "partial");
-
-                        let response = response
-                            .body(Body::from(cached_data))
-                            .map_err(|e| ProxyError::Response(e.to_string()))?;
-                        Ok(response)
-                    }
-                }
             }
 
             // 网络缓存
             DataSourceType::NetworkOnly => {
-                // 无缓存处理
                 let mut net_source = self.storage.get_net_source(url, range).await?;
-                match net_source.download_data().await {
-                    Ok(data) => {
-                        let (start, end) = self.unit_pool.write_cache(url, range, &data).await?;
-                        self.validate_data(&data, end + 1 - start).await?;
-
-                        let headers =  self.build_response_headers(range, false);
-                        let mut response = Response::builder().status(200);
-
-                        for (key, value) in headers.iter() {
-                            response = response.header(key.as_str(), value);
+                match net_source.download_stream().await {
+                    Ok((mut response, total_size)) => {
+                        if range.ends_with('-') && total_size > 0 {
+                            let start = range[6..range.len() - 1].parse::<u64>().unwrap_or(0);
+                            
+                            // 创建缓存文件
+                            let cache_path = self.storage.get_cache_path(url);
+                            let file = File::create(&cache_path).await?;
+                            let cache_writer = Arc::new(Mutex::new(Some(file)));
+                            
+                            // 创建流处理器
+                            let processor = StreamProcessor::new(
+                                cache_path.to_string_lossy().to_string(),
+                                start,
+                                total_size,
+                            );
+                            
+                            // 处理响应体
+                            let stream = processor.process_stream(response.into_body(), cache_writer).await?;
+                            
+                            // 构建新的��应
+                            let mut headers = self.build_response_headers(range, false);
+                            headers.insert(
+                                "Content-Range",
+                                HeaderValue::from_str(&format!(
+                                    "bytes {}-{}/{}",
+                                    start,
+                                    total_size - 1,
+                                    total_size
+                                ))
+                                .unwrap(),
+                            );
+                            
+                            let response = Response::builder()
+                                .status(206)
+                                .body(stream)
+                                .map_err(|e| ProxyError::Response(e.to_string()))?;
+                            Ok(response)
+                        } else {
+                            Ok(response)
                         }
-
-                        let response = response
-                            .body(Body::from(data))
-                            .map_err(|e| ProxyError::Response(e.to_string()))?;
-                        Ok(response)
                     }
                     Err(e) => Err(ProxyError::Network(format!("下载失败: {}", e))),
+                }
+            }
+
+            // 混合缓存
+            DataSourceType::Mixed => {
+                let mut net_source = self.storage.get_net_source(url, range).await?;
+                let file_source = self.storage.get_file_source(url, range).await?;
+                
+                match net_source.download_stream().await {
+                    Ok((response, total_size)) => {
+                        if range.ends_with('-') && total_size > 0 {
+                            let start = range[6..range.len() - 1].parse::<u64>().unwrap_or(0);
+                            
+                            // 创建缓存文件
+                            let cache_path = self.storage.get_cache_path(url);
+                            let file = File::create(&cache_path).await?;
+                            let cache_writer = Arc::new(Mutex::new(Some(file)));
+                            
+                            // 创建流处理器
+                            let processor = StreamProcessor::new(
+                                cache_path.to_string_lossy().to_string(),
+                                start,
+                                total_size,
+                            );
+                            
+                            // 获取缓存流和网络流
+                            let cached_stream = file_source.read_stream().await?;
+                            let network_stream = response.into_body();
+                            
+                            // 合并流
+                            let merged_stream = processor
+                                .merge_streams(cached_stream, network_stream, cache_writer)
+                                .await?;
+                            
+                            // 构建响应
+                            let mut headers = self.build_response_headers(range, true);
+                            headers.insert(
+                                "Content-Range",
+                                HeaderValue::from_str(&format!(
+                                    "bytes {}-{}/{}",
+                                    start,
+                                    total_size - 1,
+                                    total_size
+                                ))
+                                .unwrap(),
+                            );
+                            
+                            let response = Response::builder()
+                                .status(206)
+                                .body(merged_stream)
+                                .map_err(|e| ProxyError::Response(e.to_string()))?;
+                            Ok(response)
+                        } else {
+                            Ok(response)
+                        }
+                    }
+                    Err(e) => {
+                        // 网络错误时使用缓存数据
+                        let stream = file_source.read_stream().await?;
+                        
+                        // 创建 channel
+                        let (mut sender, body) = Body::channel();
+                        
+                        // 启动异步任务处理流
+                        tokio::spawn(async move {
+                            let mut stream = Box::pin(stream);
+                            while let Some(chunk) = stream.next().await {
+                                match chunk {
+                                    Ok(data) => {
+                                        if let Err(e) = sender.send_data(data).await {
+                                            log_error!("Stream", "发送数据失败: {}", e);
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log_error!("Stream", "读取数据失败: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+
+                        let mut response = Response::builder()
+                            .status(206)
+                            .body(body)
+                            .map_err(|e| ProxyError::Response(e.to_string()))?;
+                        
+                        response.headers_mut().insert(
+                            "X-Cache-Status",
+                            HeaderValue::from_static("partial"),
+                        );
+                        
+                        Ok(response)
+                    }
                 }
             }
         }

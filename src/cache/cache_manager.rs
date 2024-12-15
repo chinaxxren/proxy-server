@@ -1,10 +1,12 @@
 use crate::cache::unit_pool::UnitPool;
 use crate::utils::error::{ProxyError, Result};
 use crate::config::CONFIG;
+use crate::{log_info, log_error};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use std::io::SeekFrom;
 
+#[derive(Clone)]
 pub struct CacheManager {
     unit_pool: Arc<UnitPool>,
 }
@@ -15,11 +17,11 @@ impl CacheManager {
     }
 
     pub async fn merge_files_if_needed(&self, url: &str) -> Result<()> {
-        let cache = self.unit_pool.cache_map.lock().await;
+        let cache = self.unit_pool.cache_map.read().await;
         if let Some(ranges) = cache.get(url) {
             let merged = merge_ranges(ranges.clone());
             drop(cache); // 释放锁
-            let mut cache = self.unit_pool.cache_map.lock().await;
+            let mut cache = self.unit_pool.cache_map.write().await;
             if let Some(entry) = cache.get_mut(url) {
                 *entry = merged;
             }
@@ -28,33 +30,64 @@ impl CacheManager {
     }
 
     pub async fn clean_cache(&self) -> Result<()> {
-        let mut cache = self.unit_pool.cache_map.lock().await;
+        log_info!("Cache", "开始清理缓存...");
+        let mut total_size = 0;
+        let mut cleaned_count = 0;
+        
+        let cache = self.unit_pool.cache_map.read().await;
         let urls: Vec<String> = cache.keys().cloned().collect();
+        drop(cache);
         
         for url in urls {
             let file_path = CONFIG.get_cache_path(&url);
             if let Ok(metadata) = tokio::fs::metadata(&file_path).await {
-                // 检查文件大小
-                if metadata.len() > 1024 * 1024 * 100 { // 100MB
-                    tokio::fs::remove_file(&file_path).await?;
+                let file_size = metadata.len();
+                total_size += file_size;
+                
+                // 检查文件大小（超过100MB的文件）
+                if file_size > 1024 * 1024 * 100 {
+                    if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                        log_error!("Cache", "删除文件失败 {}: {}", file_path.display(), e);
+                        continue;
+                    }
+                    let mut cache = self.unit_pool.cache_map.write().await;
                     cache.remove(&url);
+                    cleaned_count += 1;
+                    log_info!("Cache", "删除大文件: {} ({} MB)", url, file_size / 1024 / 1024);
                     continue;
                 }
                 
-                // 检查文件访问时间
+                // 检查文件访问时间（超过24小时的文件）
                 if let Ok(time) = metadata.modified() {
-                    if time.elapsed().unwrap().as_secs() > 24 * 60 * 60 { // 24小时
-                        tokio::fs::remove_file(&file_path).await?;
+                    if time.elapsed().unwrap().as_secs() > 24 * 60 * 60 {
+                        if let Err(e) = tokio::fs::remove_file(&file_path).await {
+                            log_error!("Cache", "删除文件失败 {}: {}", file_path.display(), e);
+                            continue;
+                        }
+                        let mut cache = self.unit_pool.cache_map.write().await;
                         cache.remove(&url);
+                        cleaned_count += 1;
+                        log_info!("Cache", "删除过期文件: {}", url);
                     }
                 }
             }
         }
+        
+        // 保存更新后的缓存状态
+        self.unit_pool.save_cache_state().await?;
+        
+        log_info!(
+            "Cache", 
+            "缓存清理完成: 清理了 {} 个文件, 当前缓存总大小: {} MB", 
+            cleaned_count,
+            total_size / 1024 / 1024
+        );
+        
         Ok(())
     }
 
     pub async fn validate_cache(&self, url: &str) -> Result<()> {
-        let cache = self.unit_pool.cache_map.lock().await;
+        let cache = self.unit_pool.cache_map.read().await;
         if let Some(ranges) = cache.get(url) {
             for &(start, end) in ranges.iter() {
                 let file_path = CONFIG.get_cache_path(url);
