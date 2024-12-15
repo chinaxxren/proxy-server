@@ -17,10 +17,6 @@ pub fn parse_range(range: &str) -> Result<(u64, u64)> {
     
     // 处理 "bytes=数字-" 格式
     if bytes.ends_with('-') {
-        let start_str = &bytes[..bytes.len() - 1];
-        if let Ok(start) = start_str.parse::<u64>() {
-            return Ok((start, u64::MAX));
-        }
         return Err(ProxyError::Range("Invalid start position".to_string()));
     }
     

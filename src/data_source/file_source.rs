@@ -6,7 +6,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use std::io::SeekFrom;
 use bytes::Bytes;
-use futures::Stream;
+use futures_util::stream::Stream;
 use crate::utils::error::ProxyError;
 
 pub struct FileSource {
@@ -60,7 +60,7 @@ impl FileSource {
         });
 
         let body_bytes = hyper::body::to_bytes(body).await?;
-        let stream = futures::stream::once(async { Ok::<_, ProxyError>(body_bytes) });
+        let stream = futures_util::stream::once(async { Ok::<_, ProxyError>(body_bytes) });
         Ok(stream)
     }
 

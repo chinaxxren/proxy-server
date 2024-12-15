@@ -1,6 +1,7 @@
 use hyper::{Client, Request, Body};
 use tokio;
 use proxy_server::{log_info, server};
+use hyper::body::to_bytes;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,8 +28,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .body(Body::empty())?;
 
     let resp = client.request(req).await?;
+    // 打印body 的长度
     log_info!("Example", "响应状态: {}", resp.status());
+
     log_info!("Example", "响应头: {:#?}", resp.headers());
+    
+    let body_bytes = to_bytes(resp.into_body()).await?;
+    log_info!("Example", "响应体长度: {}", body_bytes.len());
 
     Ok(())
 }

@@ -1,0 +1,36 @@
+pub struct DataUnit {
+    // 远程文件总长度
+    pub total_length: u64,
+    // 磁盘缓存数据长度
+    pub cache_length: u64,
+    // 有效数据长度
+    pub validate_length: u64,
+
+    // 磁盘数据范围
+    pub data_ranges: Vec<DataRange>,
+}
+
+pub struct DataRange {
+    pub start: u64,
+    pub end: u64,
+    pub path: String,
+}
+
+impl DataUnit {
+    pub fn new(total_length: u64) -> Self {
+        let data_ranges = Vec::new::<DataRange>();
+
+        Self {
+            total_length,
+            cache_length: 0,
+            validate_length: 0,
+            data_ranges,
+        }
+    }
+}
+
+impl DataRange {
+    pub fn new(start: u64, end: u64, path: String) -> Self {
+        Self { start, end, path }
+    }
+}

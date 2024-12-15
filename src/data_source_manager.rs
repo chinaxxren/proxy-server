@@ -12,7 +12,8 @@ use tokio::fs::File;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use bytes::Bytes;
-use futures::StreamExt;
+use tokio_stream::StreamExt;
+use futures_util::stream::{TryStreamExt, IntoStream};
 
 pub struct DataSourceManager {
     unit_pool: UnitPool,
@@ -158,15 +159,15 @@ impl DataSourceManager {
                             
                             // 创建流处理器
                             let processor = StreamProcessor::new(
-                                cache_path.to_string_lossy().to_string(),
                                 start,
-                                total_size,
+                                url.to_string(),
+                                Arc::new(self.unit_pool.clone()),
                             );
                             
                             // 处理响应体
-                            let stream = processor.process_stream(response.into_body(), cache_writer).await?;
+                            let stream: Body = processor.process_stream(response.into_body(), cache_writer).await?;
                             
-                            // 构建新的��应
+                            // 构建新的响应
                             let mut headers = self.build_response_headers(range, false);
                             headers.insert(
                                 "Content-Range",
@@ -209,9 +210,9 @@ impl DataSourceManager {
                             
                             // 创建流处理器
                             let processor = StreamProcessor::new(
-                                cache_path.to_string_lossy().to_string(),
                                 start,
-                                total_size,
+                                url.to_string(),
+                                Arc::new(self.unit_pool.clone()),
                             );
                             
                             // 获取缓存流和网络流
