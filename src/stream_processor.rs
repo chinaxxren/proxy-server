@@ -12,14 +12,34 @@ use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
+/// 流处理器，负责处理数据流的读取、缓存和合并操作
+/// 
+/// 主要功能：
+/// - 处理网络数据流并写入缓存
+/// - 合并缓存数据和网络数据
+/// - 管理数据流的读写位置
 pub struct StreamProcessor {
+    /// 请求的起始位置
     start_pos: u64,
+    /// 请求的结束位置
     end_pos: u64,
+    /// 请求的URL
     url: String,
+    /// 缓存单元池的引用
     unit_pool: Arc<UnitPool>,
 }
 
 impl StreamProcessor {
+    /// 创建新的流处理器实例
+    ///
+    /// # Arguments
+    /// * `start` - 请求的起始位置
+    /// * `end` - 请求的结束位置
+    /// * `url` - 请求的URL
+    /// * `unit_pool` - 缓存单元池的引用
+    ///
+    /// # Returns
+    /// 返回 StreamProcessor 实例
     pub fn new(start: u64, end: u64, url: String, unit_pool: Arc<UnitPool>) -> Self {
         Self {
             start_pos: start,
@@ -29,7 +49,20 @@ impl StreamProcessor {
         }
     }
 
-    // 处理网络流，同时写入缓存
+    /// 处理网络数据流，同时写入缓存
+    ///
+    /// # Arguments
+    /// * `body` - 网络响应体
+    /// * `cache_writer` - 缓存文件写入器
+    ///
+    /// # Returns
+    /// * `Result<Body>` - 处理后的响应体
+    ///
+    /// # 功能说明
+    /// 1. 接收网络数据
+    /// 2. 发送数据给客户端
+    /// 3. 写入数据到缓存
+    /// 4. 更新缓存状态
     pub async fn process_stream(&self, mut body: Body, cache_writer: Arc<Mutex<Option<File>>>) -> Result<Body> {
         let (mut sender, body_ret) = Body::channel();
         let url = self.url.clone();
@@ -59,7 +92,7 @@ impl StreamProcessor {
                             data
                         };
 
-                        log_info!("Stream", "接收数据: {} bytes", to_send);
+                        log_info!("Stream", "接收数���: {} bytes", to_send);
                         
                         // 1. 发送数据给客户端
                         if let Err(e) = sender.send_data(chunk_to_send.clone()).await {
@@ -113,7 +146,21 @@ impl StreamProcessor {
         Ok(body_ret)
     }
 
-    // 合并缓存流和网络流
+    /// 合并缓存流和网络流
+    ///
+    /// # Arguments
+    /// * `cached_stream` - 缓存数据流
+    /// * `network_stream` - 网络数据流
+    /// * `cache_writer` - 缓存文件写入器
+    ///
+    /// # Returns
+    /// * `Result<Body>` - 合并后的响应体
+    ///
+    /// # 功能说明
+    /// 1. 优先读取缓存数据
+    /// 2. 当缓存数据不足时，从网络获取剩余数据
+    /// 3. 将新的网络数据写入缓存
+    /// 4. 更新缓存状态
     pub async fn merge_streams(
         &self,
         cached_stream: impl Stream<Item = Result<Bytes>> + Send + 'static,
@@ -343,7 +390,19 @@ impl StreamProcessor {
         Ok(body_ret)
     }
 
-    // 写入缓存文件
+    /// 写入数据到缓存文件
+    ///
+    /// # Arguments
+    /// * `cache_writer` - 缓存文件写入器
+    /// * `start_pos` - 写入的起始位置
+    /// * `data` - 要写入的数据
+    ///
+    /// # Returns
+    /// * `Result<()>` - 写入操作的结果
+    ///
+    /// # 错误处理
+    /// - 如果缓存文件不可用，返回错误
+    /// - 如果写入过程中发生IO错误，返回错误
     async fn write_to_cache(
         cache_writer: Arc<Mutex<Option<File>>>,
         start_pos: u64,
