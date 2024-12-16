@@ -1,5 +1,5 @@
 use crate::config::CONFIG;
-use crate::utils::error::{ProxyError, Result};
+use crate::utils::error::Result;
 use crate::cache::unit_pool::UnitPool;
 use crate::{log_error, log_info};
 use bytes::Bytes;
@@ -110,7 +110,7 @@ impl StreamProcessor {
 
         let pos_str = format!("{}", end_pos);
         let temp =  if end_pos == u64::MAX { "END" } else { pos_str.as_str() };
-        log_info!("Stream", "开始处理混合源请求: {} -> {} (请求范围大小: {} bytes)", 
+        log_info!("Stream", "开��处理混合源请求: {} -> {} (请求范围大小: {} bytes)", 
                  start_pos, temp, total_requested);
 
         // 1. 处理缓存流
@@ -141,7 +141,7 @@ impl StreamProcessor {
             while let Some(chunk) = cached.next().await {
                 match chunk {
                     Ok(data) => {
-                        // ���算这次应该发送的数据长度
+                        // 算这次应该发送的数据长度
                         let available_len = data.len() as u64;
                         let remaining_needed = if current_pos <= cache_end {
                             std::cmp::min(cache_end + 1 - current_pos, total_requested - cached_bytes)

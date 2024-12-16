@@ -5,9 +5,7 @@ use crate::cache::data_unit::DataUnit;
 use crate::config::CONFIG;
 use crate::{log_info, log_error};
 use tokio::fs::File;
-use tokio::io::AsyncSeekExt;
-use std::io::SeekFrom;
-use std::sync::Arc;
+
 
 pub struct UnitPool {
     pub cache_map: RwLock<HashMap<String, DataUnit>>,

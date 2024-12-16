@@ -1,12 +1,11 @@
 use crate::config::CONFIG;
 use crate::utils::parse_range;
 use crate::utils::error::{Result, ProxyError};
-use hyper::Body;
+use bytes::Bytes;
+use futures_util::stream::Stream;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use std::io::SeekFrom;
-use bytes::Bytes;
-use futures_util::stream::{Stream, StreamExt};
 use std::pin::Pin;
 use futures_util::Future;
 use std::task::{Context, Poll};

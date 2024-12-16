@@ -1,6 +1,5 @@
 use crate::utils::error::{Result, ProxyError};
-use crate::config::CONFIG;
-use crate::{log_error, log_info};
+use crate::{log_info};
 use hyper::{Client, Request, Body, Method};
 use hyper::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use hyper_tls::HttpsConnector;

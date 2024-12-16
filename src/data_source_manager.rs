@@ -6,7 +6,7 @@ use crate::data_storage::DataStorage;
 use crate::stream_processor::StreamProcessor;
 use crate::utils::error::{ProxyError, Result};
 use crate::{log_error, log_info};
-use futures_util::stream::{IntoStream, TryStreamExt};
+
 use hyper::header::{HeaderMap, HeaderValue};
 use hyper::{Body, Request, Response};
 use std::sync::Arc;
@@ -25,6 +25,7 @@ pub enum DataSourceType {
 pub struct DataSourceManager {
     unit_pool: Arc<UnitPool>,
     storage: DataStorage,
+    #[allow(dead_code)]
     cache_manager: CacheManager,
 }
 
