@@ -40,7 +40,6 @@ impl StreamProcessor {
 
         tokio::spawn(async move {
             let mut buffer = Vec::with_capacity(total_size as usize);
-            let mut current_pos = start_pos;
             let mut total_received = 0u64;
             
             'receive_loop: while let Some(chunk) = body.data().await {
@@ -153,7 +152,6 @@ impl StreamProcessor {
         // 1. 处理缓存流
         let mut cached = Box::pin(cached_stream);
         tokio::spawn(async move {
-            let mut buffer = Vec::<u8>::new();
             let mut cached_bytes = 0u64;
             let mut network_bytes = 0u64;
             let mut current_pos = start_pos;
