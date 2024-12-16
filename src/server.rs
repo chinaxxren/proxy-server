@@ -12,7 +12,6 @@ use crate::log_info;
 
 pub struct ProxyServer {
     port: u16,
-    cache_dir: PathBuf,
     handler: Arc<RequestHandler>,
 }
 
@@ -31,7 +30,6 @@ impl ProxyServer {
         
         Self {
             port,
-            cache_dir,
             handler,
         }
     }

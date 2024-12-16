@@ -1,4 +1,3 @@
-use crate::config::CONFIG;
 use crate::utils::parse_range;
 use crate::utils::error::{Result, ProxyError};
 use bytes::Bytes;
@@ -11,6 +10,7 @@ use futures_util::Future;
 use std::task::{Context, Poll};
 use crate::{log_info, log_error};
 use std::path::PathBuf;
+use crate::CONFIG; // 导入 CONFIG
 
 #[derive(Debug, Clone)]
 pub struct FileSource {
@@ -35,37 +35,14 @@ impl FileSource {
     }
 
     pub async fn read_stream(&self) -> Result<impl Stream<Item = Result<Bytes>>> {
-        let mut file = File::open(&self.path).await?;
-        
-        // 获取文件大小
-        let file_size = file.metadata().await?.len();
-        
-        // 解析范围
-        let (start, end) = parse_range(&self.range)?;
-        
-        // 确保开始位置不超过文件大小
-        if start >= file_size {
-            return Err(ProxyError::Cache("请求范围超出文件大小".to_string()));
+        // 确保文件存在
+        let cache_file = CONFIG.get_cache_file(&self.path)?;
+        if !tokio::fs::try_exists(&cache_file).await? {
+            return Err(ProxyError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found")));
         }
         
-        // 设置实际的结束位置
-        let end_pos = if end == u64::MAX {
-            file_size - 1
-        } else {
-            std::cmp::min(end, file_size - 1)
-        };
-        
-        // 移动到起始位置
-        file.seek(SeekFrom::Start(start)).await?;
-        
-        let stream = FileStream {
-            file: Some(file),
-            buffer_size: 16384, // 16KB 缓冲区
-            current_pos: start,
-            end_pos,
-        };
-
-        Ok(stream)
+        let file = tokio::fs::File::open(cache_file).await?;
+        Ok(FileStream::new(file, self.range.clone()))
     }
 
     pub async fn read_data(&self) -> Result<Vec<u8>> {
@@ -142,6 +119,18 @@ impl Stream for FileStream {
                 Poll::Ready(Some(Err(ProxyError::Io(e))))
             }
             Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl FileStream {
+    pub fn new(file: File, range: String) -> Self {
+        let (start, end) = parse_range(&range).expect("Invalid range");
+        Self {
+            file: Some(file),
+            buffer_size: 1024, // 设置合适的缓冲区大小
+            current_pos: start,
+            end_pos: end,
         }
     }
 }

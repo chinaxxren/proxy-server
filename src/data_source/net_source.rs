@@ -1,7 +1,6 @@
 use crate::data_request::DataRequest;
 use crate::utils::error::Result;
 use hyper::{Body, Response};
-use hyper::client::HttpConnector;
 use hyper_tls::HttpsConnector;
 
 #[derive(Debug, Clone)]

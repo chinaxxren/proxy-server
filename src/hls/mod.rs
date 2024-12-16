@@ -4,7 +4,6 @@ pub use handler::DefaultHlsHandler;
 
 use std::path::PathBuf;
 use async_trait::async_trait;
-use m3u8_rs::Playlist;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -53,7 +52,7 @@ pub struct VariantStream {
     pub url: String,
     /// 带宽（比特/秒）
     pub bandwidth: u64,
-    /// 分辨率（可选）
+    /// 分辨率（可���）
     pub resolution: Option<String>,
 }
 

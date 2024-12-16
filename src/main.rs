@@ -1,7 +1,5 @@
-use proxy_server::config::Config;
 use proxy_server::server::ProxyServer;
 use proxy_server::utils::error::ProxyError;
-use proxy_server::log_info;
 use std::env;
 
 #[tokio::main]

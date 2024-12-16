@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 创建并启动代理服务器
     let server = ProxyServer::new(8080, "./cache");
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = server.run().await {
+        if let Err(e) = server.start().await {
             eprintln!("Server error: {}", e);
         }
     });

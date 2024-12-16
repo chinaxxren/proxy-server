@@ -29,36 +29,4 @@ async-trait = "0.1"
 md5 = "0.7"
 reqwest = "0.11"
 
-[[example]]
-name = "video_request"
-path = "src/examples/video_request.rs"
-
-[[example]]
-name = "twice_request"
-path = "src/examples/twice_request.rs"
-
-[[example]]
-name = "onice_request"
-path = "src/examples/onice_request.rs"
-
-[[example]]
-name = "data_request"
-path = "src/examples/data_request.rs"
-
-[[example]]
-name = "https_request"
-path = "src/examples/https_request.rs"
-
-[[example]]
-name = "mixed_source_test"
-path = "src/examples/mixed_source_test.rs"
-
-[[example]]
-name = "proxy_client"
-path = "src/examples/proxy_client.rs"
-
-[[example]]
-name = "hls_test"
-path = "src/examples/hls_test.rs"
-
 

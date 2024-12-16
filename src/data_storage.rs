@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 use crate::cache::unit_pool::DataUnit;
 use crate::config::CONFIG;
 use crate::utils::error::Result;
-use crate::{log_info, log_error};
+use crate::{log_info};
 use tokio::fs;
 
 pub struct DataStorage {
@@ -22,10 +22,10 @@ impl DataStorage {
         let cache_path = CONFIG.get_cache_file(url)?;
         let cache_path_str = cache_path.to_string_lossy().into_owned();
         
-        log_info!("Storage", "检查缓存文件: {}", cache_path_str);
+        log_info!("Storage", "检查缓存文件: {}", url);
         
         if !fs::try_exists(&cache_path).await? {
-            log_info!("Storage", "缓存文件不存在: {}", cache_path_str);
+            log_info!("Storage", "缓存文件不存在: {}", url);
             return Ok(false);
         }
         
@@ -41,15 +41,17 @@ impl DataStorage {
         let cache_file = CONFIG.get_cache_file(url)?;
         let cache_file_str = cache_file.to_string_lossy().into_owned();
         
+        log_info!("Storage", "检查缓存文件: {}", url);
+        
         if !fs::try_exists(&cache_file).await? {
-            log_info!("Storage", "缓存文件不存在: {}", cache_file_str);
+            log_info!("Storage", "缓存文件不存在: {}", url);
             return Ok(0);
         }
         
         let metadata = fs::metadata(&cache_file).await?;
         
         if metadata.len() == 0 {
-            log_info!("Storage", "缓存文件大小为0，删除文件: {}", cache_file_str);
+            log_info!("Storage", "缓存文件大小为0，删除文件: {}", url);
             fs::remove_file(&cache_file).await?;
             return Ok(0);
         }
@@ -61,15 +63,17 @@ impl DataStorage {
         let cache_file = CONFIG.get_cache_file(url)?;
         let cache_file_str = cache_file.to_string_lossy().into_owned();
         
+        log_info!("Storage", "检查缓存文件: {}", url);
+        
         if !fs::try_exists(&cache_file).await? {
-            log_info!("Storage", "缓存文件不存在，跳过优化: {}", cache_file_str);
+            log_info!("Storage", "缓存文件不存在，跳过优化: {}", url);
             return Ok(());
         }
         
         let metadata = fs::metadata(&cache_file).await?;
         
         if metadata.len() == 0 {
-            log_info!("Storage", "缓存文件大小为0，删除文件: {}", cache_file_str);
+            log_info!("Storage", "缓存文件大小为0，删除文件: {}", url);
             fs::remove_file(&cache_file).await?;
         }
         
