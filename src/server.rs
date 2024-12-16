@@ -5,9 +5,9 @@ use crate::utils::error::{Result, ProxyError};
 use crate::log_info;
 use std::net::SocketAddr;
 
-pub async fn run_server() -> Result<()> {
+pub async fn run_server_with_port(port: u16) -> Result<()> {
     // 设置服务器地址和端口
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     // 创建服务
     let make_svc = make_service_fn(|_conn| async {
@@ -24,4 +24,8 @@ pub async fn run_server() -> Result<()> {
 
     // 等待服务器运行
     server.await.map_err(|e| ProxyError::Http(e))
+}
+
+pub async fn run_server() -> Result<()> {
+    run_server_with_port(8080).await
 }

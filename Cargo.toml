@@ -22,6 +22,7 @@ futures-util = "0.3.31"
 tokio-stream = { version = "0.1" }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2.2"
+urlencoding = "2.1.0"
 
 [[example]]
 name = "video_request"
@@ -46,3 +47,8 @@ path = "src/examples/https_request.rs"
 [[example]]
 name = "mixed_source_test"
 path = "src/examples/mixed_source_test.rs"
+
+[[example]]
+name = "proxy_client"
+path = "src/examples/proxy_client.rs"
+

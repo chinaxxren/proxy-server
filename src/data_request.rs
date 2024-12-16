@@ -4,6 +4,7 @@ use hyper::{
     header::{HeaderMap, HeaderValue, RANGE},
     Request,
 };
+use url::Url;
 
 pub struct DataRequest {
     url: String,
@@ -13,47 +14,56 @@ pub struct DataRequest {
 
 impl DataRequest {
     pub fn new(req: &Request<hyper::Body>) -> Result<Self> {
-        let original_url = original_url(req)?;
+        log_info!("Request", "req: {}", req.uri());
+        
+        let url = if let Some(original_url) = req.headers().get("X-Original-Url") {
+            original_url.to_str()?.to_string()
+        } else {
+            let path = req.uri().path();
+            
+            // 检查是否是 /proxy/ 格式
+            if let Some(proxy_path) = path.strip_prefix("/proxy/") {
+                proxy_path.to_string()
+            } else {
+                // 如果不是 /proxy/ 格式，尝试查询参数
+                let uri = req.uri().to_string();
+                let parsed_url = Url::parse(&uri)
+                    .map_err(|_| ProxyError::Request("无效的请求URL".to_string()))?;
+                
+                let proxy_param = parsed_url.query_pairs()
+                    .find(|(key, _)| key == "proxy")
+                    .map(|(_, value)| value.into_owned())
+                    .ok_or_else(|| ProxyError::Request("缺少proxy参数".to_string()))?;
 
-        let range = req
-            .headers()
-            .get(RANGE)
-            .and_then(|r| r.to_str().ok())
-            .unwrap_or("bytes=0-")
-            .to_string();
-
-        let mut headers = HeaderMap::new();
-        for (key, value) in req.headers() {
-            if key.to_string() == "x-original-url" || key.to_string() == "host" {
-                continue;
+                urlencoding::decode(&proxy_param)
+                    .map_err(|_| ProxyError::Request("无效的proxy参数编码".to_string()))?
+                    .into_owned()
             }
+        };
 
-            if let Ok(v) = HeaderValue::from_bytes(value.as_bytes()) {
-                log_info!(
-                    "Request",
-                    "key: {}, value: {}",
-                    key,
-                    value.to_str().unwrap_or("")
-                );
-                headers.insert(key, v);
-            }
-        }
+        let range = if let Some(range_header) = req.headers().get(RANGE) {
+            range_header.to_str()?.to_string()
+        } else {
+            "bytes=0-".to_string()  // 默认请求完整文件
+        };
+
+        log_info!("Request", "url: {}", url);
+        log_info!("Request", "key: range, value: {}", range);
 
         Ok(Self {
-            url: original_url,
+            url,
             range,
-            headers,
+            headers: req.headers().clone(),
         })
     }
 
     pub fn new_request_with_range(url: &str, range: &str) -> Request<hyper::Body> {
         let mut builder = Request::builder().method("GET").uri(url);
 
-        if !range.is_empty() {
-            if let Ok(value) = HeaderValue::from_str(range) {
-                builder = builder.header(RANGE, value);
-                log_info!("Request", "Range header: {}", range);
-            }
+        // 总是添加 Range 头，因为现在我们总是有一个值
+        if let Ok(value) = HeaderValue::from_str(range) {
+            builder = builder.header(RANGE, value);
+            log_info!("Request", "Range header: {}", range);
         }
 
         builder = builder
@@ -76,19 +86,5 @@ impl DataRequest {
 
     pub fn get_headers(&self) -> &HeaderMap {
         &self.headers
-    }
-}
-
-fn original_url(req: &Request<hyper::Body>) -> Result<String> {
-    let original_url = req.headers().get("X-Original-Url");
-    // 获取 X-Original-Url 头部
-    match original_url {
-        Some(value) => Ok(value
-            .to_str()
-            .map_err(|_| ProxyError::Request("X-Original-Url 头部 格式错误".to_string()))?
-            .to_string()),
-        None => {
-            return Err(ProxyError::Request("无效的URL".to_string()));
-        }
     }
 }

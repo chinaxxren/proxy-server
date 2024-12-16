@@ -8,11 +8,13 @@ pub struct Config {
 
 impl Config {
     pub fn new() -> Self {
-        let cache_dir = "cache".to_string();
-        // 确保缓存目录存在
-        std::fs::create_dir_all(&cache_dir).expect("无法创建缓存目录");
+        Self::with_cache_dir("cache")
+    }
 
-        Self { cache_dir }
+    pub fn with_cache_dir(cache_dir: &str) -> Self {
+        // 确保缓存目录存在
+        std::fs::create_dir_all(cache_dir).expect("无法创建缓存目录");
+        Self { cache_dir: cache_dir.to_string() }
     }
 
     pub fn get_cache_state(&self, url: &str) -> String {
@@ -27,6 +29,7 @@ impl Config {
 
         format!("{}/{:x}.json", self.cache_dir, hash)
     }
+
     pub fn get_cache_file(&self, url: &str) -> String {
         let url_parts = Url::parse(url).expect("无效的URL");
         let host = url_parts.host_str().unwrap_or_default();
