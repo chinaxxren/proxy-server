@@ -94,10 +94,24 @@ impl StreamProcessor {
         let unit_pool = self.unit_pool.clone();
         let start_pos = self.start_pos;
         let end_pos = self.end_pos;
-        let total_requested = end_pos - start_pos + 1;
+        let total_requested = if end_pos == u64::MAX {
+            if let Some(state) = unit_pool.cache_map.read().await.get(&CONFIG.get_cache_file(&url)) {
+                if let Some(total_size) = state.total_size {
+                    total_size - start_pos
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            end_pos - start_pos + 1
+        };
 
+        let pos_str = format!("{}", end_pos);
+        let temp =  if end_pos == u64::MAX { "END" } else { pos_str.as_str() };
         log_info!("Stream", "开始处理混合源请求: {} -> {} (请求范围大小: {} bytes)", 
-                 start_pos, end_pos, total_requested);
+                 start_pos, temp, total_requested);
 
         // 1. 处理缓存流
         let mut cached = Box::pin(cached_stream);
@@ -113,19 +127,21 @@ impl StreamProcessor {
             let cache_end = match cache_map.get(&cache_path) {
                 Some(state) => {
                     state.ranges.iter()
-                        .find(|range| range.0 <= start_pos && range.1 >= start_pos)
+                        .filter(|range| range.1 >= start_pos && range.0 <= end_pos)
                         .map(|range| range.1)
+                        .max()
                         .unwrap_or(0)
                 }
                 None => 0
             };
+            drop(cache_map);
 
             // 先读取缓存数据
             log_info!("Stream", "开始读取缓存数据...");
             while let Some(chunk) = cached.next().await {
                 match chunk {
                     Ok(data) => {
-                        // 计算这次应该发送的数据长度
+                        // ���算这次应该发送的数据长度
                         let available_len = data.len() as u64;
                         let remaining_needed = if current_pos <= cache_end {
                             std::cmp::min(cache_end + 1 - current_pos, total_requested - cached_bytes)
