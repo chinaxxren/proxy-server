@@ -19,6 +19,7 @@ pub enum ProxyError {
     Request(String),
     Response(String),
     SerdeError(String),
+    Parse(String),
 }
 
 impl fmt::Display for ProxyError {
@@ -36,6 +37,7 @@ impl fmt::Display for ProxyError {
             ProxyError::Request(s) => write!(f, "请求错误: {}", s),
             ProxyError::Response(s) => write!(f, "响应错误: {}", s),
             ProxyError::SerdeError(s) => write!(f, "序列化错误: {}", s),
+            ProxyError::Parse(s) => write!(f, "解析错误: {}", s),
         }
     }
 }

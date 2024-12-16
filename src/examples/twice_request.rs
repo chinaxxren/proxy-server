@@ -7,7 +7,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 启动代理服务器
     tokio::spawn(async {
         log_info!("Example", "启动代理服务器...");
-        server::run_server().await.unwrap();
+        let server = server::ProxyServer::new(8080, "./cache");
+        server.start().await;
     });
 
     // 等待服务器启动

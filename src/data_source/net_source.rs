@@ -1,89 +1,36 @@
 use crate::data_request::DataRequest;
-use crate::utils::error::{ProxyError, Result};
-use crate::{log_error, log_info};
-use crate::cache::SizeChecker;
+use crate::utils::error::Result;
+use hyper::{Body, Response};
 use hyper::client::HttpConnector;
-use hyper::header::{CONTENT_LENGTH, CONTENT_RANGE};
-use hyper::{Body, Client, Response};
 use hyper_tls::HttpsConnector;
 
+#[derive(Debug, Clone)]
 pub struct NetSource {
-    url: String,
-    range: String,
-    client: Client<HttpsConnector<HttpConnector>>,
-    size_checker: SizeChecker,
+    pub url: String,
+    pub range: String,
 }
 
 impl NetSource {
     pub fn new(url: &str, range: &str) -> Self {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, hyper::Body>(https);
-        let size_checker = SizeChecker::new();
-
         Self {
             url: url.to_string(),
             range: range.to_string(),
-            client,
-            size_checker,
         }
     }
-
-    pub async fn download_stream(&mut self) -> Result<(Response<Body>, u64)> {
-        let data_request = DataRequest::new_request_with_range(&self.url, &self.range);
-
-        match self.client.request(data_request).await {
-            Ok(resp) => {
-                log_info!("NetSource", "resp status: {:#?}", resp.status());
-
-                if !resp.status().is_success() {
-                    log_error!("NetSource", "HTTP request failed: {}", resp.status());
-                    log_error!(
-                        "NetSource",
-                        "HTTP request failed headers: {:#?}",
-                        resp.headers()
-                    );
-                    return Err(ProxyError::Request("HTTP request failed".to_string()));
-                }
-
-                // 获取文件总大小
-                let total_size = if let Some(content_range) = resp.headers().get(CONTENT_RANGE) {
-                    if let Ok(range_str) = content_range.to_str() {
-                        if let Some(size_str) = range_str.split('/').last() {
-                            size_str.parse::<u64>().unwrap_or(0)
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    }
-                } else if let Some(content_length) = resp.headers().get(CONTENT_LENGTH) {
-                    content_length
-                        .to_str()
-                        .ok()
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(0)
-                } else {
-                    // 如果响应头中没有大小信息，尝试使用 size_checker 获取
-                    match self.size_checker.check_file_size(&self.url).await {
-                        Ok(size) => size,
-                        Err(_) => 0,
-                    }
-                };
-
-                // 如果是无限长度的请求，更新range字符串
-                if self.range.ends_with('-') && total_size > 0 {
-                    let start = self.range[6..self.range.len() - 1]
-                        .parse::<u64>()
-                        .unwrap_or(0);
-                    self.range = format!("bytes={}-{}", start, total_size - 1);
-                }
-
-                Ok((resp, total_size))
-            }
-            Err(e) => {
-                log_error!("NetSource", "HTTP request failed: {}", e);
-                Err(ProxyError::Request("HTTP request failed".to_string()))
-            }
-        }
+    
+    pub async fn download_stream(&self) -> Result<(Response<Body>, u64)> {
+        let https = HttpsConnector::new();
+        let client = hyper::Client::builder().build::<_, hyper::Body>(https);
+        
+        let req = DataRequest::new_request_with_range(&self.url, &self.range);
+        let resp = client.request(req).await?;
+        
+        let content_length = resp.headers()
+            .get(hyper::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        
+        Ok((resp, content_length))
     }
 }

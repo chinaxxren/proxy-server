@@ -123,6 +123,23 @@ let response = reqwest::Client::new()
     .await?;
 ```
 
+### HLS 流媒体测试
+
+使用 Apple 的示例 HLS 流进行测试：
+
+```bash
+# 运行 HLS 测试示例
+cargo run --example hls_test
+```
+
+这个示例会：
+1. 获取主播放列表 (bipbopall.m3u8)
+2. 下载码率文件 (gear1/prog_index.m3u8)
+3. 下载视频片段 (gear1/fileSequence0.ts)
+4. 测试视频片段的范围请求
+
+测试 URL：`http://devimages.apple.com/iphone/samples/bipbop/bipbopall.m3u8`
+
 ### 混合源测试
 
 ```rust

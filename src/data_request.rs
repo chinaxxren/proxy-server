@@ -5,11 +5,21 @@ use hyper::{
     Request,
 };
 use url::Url;
+use urlencoding;
 
+#[derive(Debug, Clone)]
+pub enum RequestType {
+    Normal,
+    M3u8,
+    Segment,
+}
+
+#[derive(Debug, Clone)]
 pub struct DataRequest {
-    url: String,
-    range: String,
-    headers: HeaderMap,
+    pub url: String,
+    pub range: String,
+    pub headers: HeaderMap,
+    pub request_type: RequestType,
 }
 
 impl DataRequest {
@@ -23,37 +33,54 @@ impl DataRequest {
             
             // 检查是否是 /proxy/ 格式
             if let Some(proxy_path) = path.strip_prefix("/proxy/") {
-                proxy_path.to_string()
+                // 处理可能存在的多重 /proxy/ 前缀
+                let mut clean_url = proxy_path.to_string();
+                while let Some(idx) = clean_url.find("/proxy/") {
+                    clean_url = clean_url[idx + 7..].to_string();
+                }
+                
+                // 解码 URL
+                urlencoding::decode(&clean_url)
+                    .map_err(|e| ProxyError::Request(format!("URL 解码失败: {}", e)))?
+                    .into_owned()
             } else {
                 // 如果不是 /proxy/ 格式，尝试查询参数
                 let uri = req.uri().to_string();
                 let parsed_url = Url::parse(&uri)
                     .map_err(|_| ProxyError::Request("无效的请求URL".to_string()))?;
                 
-                let proxy_param = parsed_url.query_pairs()
-                    .find(|(key, _)| key == "proxy")
-                    .map(|(_, value)| value.into_owned())
-                    .ok_or_else(|| ProxyError::Request("缺少proxy参数".to_string()))?;
-
-                urlencoding::decode(&proxy_param)
-                    .map_err(|_| ProxyError::Request("无效的proxy参数编码".to_string()))?
-                    .into_owned()
+                parsed_url.to_string()
             }
         };
 
+        log_info!("Request", "url: {}", url);
+        
+        // 获取 Range 头
         let range = if let Some(range_header) = req.headers().get(RANGE) {
             range_header.to_str()?.to_string()
         } else {
-            "bytes=0-".to_string()  // 默认请求完整文件
+            "bytes=0-".to_string()
         };
-
-        log_info!("Request", "url: {}", url);
+        
         log_info!("Request", "key: range, value: {}", range);
-
+        
+        // 确定请求类型
+        let request_type = if url.ends_with(".m3u8") {
+            log_info!("Request", "type: M3u8");
+            RequestType::M3u8
+        } else if url.ends_with(".ts") {
+            log_info!("Request", "type: Segment");
+            RequestType::Segment
+        } else {
+            log_info!("Request", "type: Normal");
+            RequestType::Normal
+        };
+        
         Ok(Self {
             url,
             range,
             headers: req.headers().clone(),
+            request_type,
         })
     }
 
@@ -86,5 +113,9 @@ impl DataRequest {
 
     pub fn get_headers(&self) -> &HeaderMap {
         &self.headers
+    }
+
+    pub fn get_type(&self) -> &RequestType {
+        &self.request_type
     }
 }

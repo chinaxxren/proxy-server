@@ -10,16 +10,28 @@ use std::pin::Pin;
 use futures_util::Future;
 use std::task::{Context, Poll};
 use crate::{log_info, log_error};
+use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
 pub struct FileSource {
-    path: String,
-    range: String,
+    pub path: String,
+    pub range: String,
 }
 
 impl FileSource {
-    pub fn new(url: &str, range: &str) -> Self {
-        let path = CONFIG.get_cache_file(url);
-        Self { path, range: range.to_string() }
+    pub fn new(path: &str, range: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            range: range.to_string(),
+        }
+    }
+    
+    pub fn from_path_buf(path: Result<PathBuf>, range: &str) -> Result<Self> {
+        let path_str = path?.to_string_lossy().into_owned();
+        Ok(Self {
+            path: path_str,
+            range: range.to_string(),
+        })
     }
 
     pub async fn read_stream(&self) -> Result<impl Stream<Item = Result<Bytes>>> {

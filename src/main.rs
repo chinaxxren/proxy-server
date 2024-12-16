@@ -1,5 +1,5 @@
 use proxy_server::config::Config;
-use proxy_server::server::run_server_with_port;
+use proxy_server::server::ProxyServer;
 use proxy_server::utils::error::ProxyError;
 use proxy_server::log_info;
 use std::env;
@@ -23,10 +23,9 @@ async fn main() -> Result<(), ProxyError> {
         "cache"
     };
 
-    // 初始化配置
-    let _config = Config::with_cache_dir(cache_dir);
-    log_info!("Main", "缓存目录: {}", cache_dir);
-    
     // 启动服务器
-    run_server_with_port(port).await
+    let server = ProxyServer::new(port, cache_dir);
+    let _ = server.start().await;
+    
+    Ok(())
 }

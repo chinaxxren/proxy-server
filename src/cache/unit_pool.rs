@@ -1,213 +1,135 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::utils::error::Result;
-use crate::cache::data_unit::DataUnit;
 use crate::config::CONFIG;
+use crate::utils::error::{Result, ProxyError};
 use crate::{log_info, log_error};
-use tokio::fs::File;
+use tokio::fs;
 
+use super::CacheState;
+
+#[derive(Debug, Clone)]
+pub struct DataUnit {
+    pub cache_file: String,
+    pub ranges: Vec<(u64, u64)>,
+    pub size: Option<u64>,
+}
+
+impl DataUnit {
+    pub fn new(cache_file: String) -> Self {
+        Self {
+            cache_file,
+            ranges: Vec::new(),
+            size: None,
+        }
+    }
+    
+    pub fn is_complete(&self) -> bool {
+        if let Some(size) = self.size {
+            if let Some((_, end)) = self.ranges.first() {
+                return *end >= size - 1;
+            }
+        }
+        false
+    }
+    
+    pub fn needs_allocation(&self, size: u64) -> bool {
+        if let Some(current_size) = self.size {
+            size > current_size
+        } else {
+            true
+        }
+    }
+}
 
 pub struct UnitPool {
-    pub cache_map: RwLock<HashMap<String, DataUnit>>,
+    cache_dir: PathBuf,
+    pub(crate) cache_map: Arc<RwLock<HashMap<String, DataUnit>>>,
 }
 
 impl UnitPool {
-    pub fn new() -> Self {
+    pub fn new(cache_dir: PathBuf) -> Self {
         Self {
-            cache_map: RwLock::new(HashMap::new()),
+            cache_dir,
+            cache_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-
+    
+    pub fn new_data_unit(cache_file: &str) -> DataUnit {
+        DataUnit::new(cache_file.to_string())
+    }
+    
+    pub async fn get_data_unit(&self, url: &str) -> Result<Option<DataUnit>> {
+        let cache_path = CONFIG.get_cache_file(url)?;
+        let cache_path_str = cache_path.to_string_lossy().into_owned();
+        
+        let cache_map = self.cache_map.read().await;
+        Ok(cache_map.get(&cache_path_str).cloned())
+    }
+    
     pub async fn update_cache(&self, url: &str, range: &str) -> Result<()> {
         let (start, end) = crate::utils::range::parse_range(range)?;
-        let cache_path = CONFIG.get_cache_file(url);
+        let cache_path = CONFIG.get_cache_file(url)?;
+        let cache_path_str = cache_path.to_string_lossy().into_owned();
         
         let mut cache_map = self.cache_map.write().await;
-        let data_unit = cache_map.entry(cache_path.clone()).or_insert_with(|| {
-            DataUnit::new(cache_path.clone())
-        });
-        
-        // 检查是否需要扩展文件大小
-        if data_unit.needs_allocation(end + 1) {
-            self.ensure_file_size(&data_unit.cache_file, end + 1).await?;
-            data_unit.update_allocated_size(end + 1);
+        if let Some(data_unit) = cache_map.get_mut(&cache_path_str) {
+            data_unit.ranges.push((start, end));
+            data_unit.ranges.sort_by_key(|r| r.0);
             
-            // 更新文件总大小
-            if let Ok(metadata) = tokio::fs::metadata(&data_unit.cache_file).await {
-                let file_size = metadata.len();
-                if data_unit.total_size.is_none() || data_unit.total_size.unwrap() < file_size {
-                    data_unit.set_total_size(file_size);
-                }
-            }
-        }
-        
-        data_unit.add_range(start, end);
-        
-        // 保存缓存状态
-        drop(cache_map);
-        self.save_cache_state(url).await?;
-        
-        log_info!("Cache", "更新缓存: {} {}-{}", url, start, end);
-        Ok(())
-    }
-
-    async fn ensure_file_size(&self, path: &str, size: u64) -> Result<()> {
-        let file = File::options()
-            .create(true)
-            .write(true)
-            .open(path)
-            .await?;
-
-        file.set_len(size).await?;
-        Ok(())
-    }
-
-    pub async fn is_fully_cached(&self, url: &str, range: &str) -> Result<bool> {
-        let cache_path = CONFIG.get_cache_file(url);
-        let cache_map = self.cache_map.read().await;
-        
-        if let Some(data_unit) = cache_map.get(&cache_path) {
-            if let Ok((start, end)) = crate::utils::range::parse_range(range) {
-                return Ok(data_unit.contains_range(start, end));
-            }
-        }
-        
-        Ok(false)
-    }
-
-    pub async fn is_partially_cached(&self, url: &str, range: &str) -> Result<bool> {
-        let cache_path = CONFIG.get_cache_file(url);
-        let cache_map = self.cache_map.read().await;
-        
-        if let Some(data_unit) = cache_map.get(&cache_path) {
-            if let Ok((start, end)) = crate::utils::range::parse_range(range) {
-                return Ok(data_unit.partially_contains_range(start, end));
-            }
-        }
-        
-        Ok(false)
-    }
-
-    pub async fn get_cached_ranges(&self, url: &str) -> Result<Vec<(u64, u64)>> {
-        let cache_path = CONFIG.get_cache_file(url);
-        let cache_map = self.cache_map.read().await;
-        
-        if let Some(data_unit) = cache_map.get(&cache_path) {
-            Ok(data_unit.ranges.clone())
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    pub async fn get_cache_file(&self, url: &str) -> Result<Option<String>> {
-        let cache_path = CONFIG.get_cache_file(url);
-        let cache_map = self.cache_map.read().await;
-        Ok(cache_map.get(&cache_path).map(|unit| unit.cache_file.clone()))
-    }
-
-    pub async fn set_total_size(&self, url: &str, size: u64) -> Result<()> {
-        let cache_path = CONFIG.get_cache_file(url);
-        let mut cache_map = self.cache_map.write().await;
-        
-        if let Some(data_unit) = cache_map.get_mut(&cache_path) {
-            data_unit.set_total_size(size);
-            // 如果需要，预分配文件大小
-            if data_unit.needs_allocation(size) {
-                self.ensure_file_size(&data_unit.cache_file, size).await?;
-                data_unit.update_allocated_size(size);
-            }
-            drop(cache_map);
-            self.save_cache_state(url).await?;
-            Ok(())
-        } else {
-            let mut data_unit = DataUnit::new(cache_path.clone());
-            data_unit.set_total_size(size);
-            // 预分配文件大小
-            self.ensure_file_size(&data_unit.cache_file, size).await?;
-            data_unit.update_allocated_size(size);
-            cache_map.insert(cache_path, data_unit);
-            drop(cache_map);
-            self.save_cache_state(url).await?;
-            Ok(())
-        }
-    }
-
-    pub async fn clean_old_cache(&self, max_age_hours: i64) -> Result<()> {
-        let mut cache_map = self.cache_map.write().await;
-        let now = chrono::Utc::now();
-        
-        let mut to_remove = Vec::new();
-        for (cache_path, data_unit) in cache_map.iter() {
-            let age = now.signed_duration_since(data_unit.last_accessed);
-            if age.num_hours() >= max_age_hours {
-                to_remove.push(cache_path.clone());
-                // 删除缓存文件
-                if let Err(e) = tokio::fs::remove_file(&data_unit.cache_file).await {
-                    log_error!("Cache", "删除缓存文件失败: {} - {}", data_unit.cache_file, e);
-                }
-                // 删除状态文件
-                let state_path = CONFIG.get_cache_state(cache_path);
-                if let Err(e) = tokio::fs::remove_file(&state_path).await {
-                    log_error!("Cache", "删除状态文件失败: {} - {}", state_path, e);
-                }
-            }
-        }
-        
-        // 从内存中移除
-        for path in to_remove {
-            cache_map.remove(&path);
-        }
-        
-        Ok(())
-    }
-
-    // 保存单个 URL 的缓存状态
-    pub async fn save_cache_state(&self, url: &str) -> Result<()> {
-        let cache_path = CONFIG.get_cache_file(url);
-        let state_path = CONFIG.get_cache_state(url);
-        
-        let cache_map = self.cache_map.read().await;
-        if let Some(data_unit) = cache_map.get(&cache_path) {
-            // 确保目录存在
-            if let Some(parent) = std::path::Path::new(&state_path).parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            
-            // 序列化并保存
-            let state_json = serde_json::to_string_pretty(data_unit)?;
-            tokio::fs::write(&state_path, state_json).await?;
-            log_info!("Cache", "保存缓存状态: {} -> {:?}", url, data_unit);
-        }
-        
-        Ok(())
-    }
-
-    // 加载单个 URL 的缓存状态
-    pub async fn load_cache_state(&self, url: &str) -> Result<()> {
-        let cache_path = CONFIG.get_cache_file(url);
-        let state_path = CONFIG.get_cache_state(url);
-        
-        if let Ok(state_json) = tokio::fs::read_to_string(&state_path).await {
-            if let Ok(mut data_unit) = serde_json::from_str::<DataUnit>(&state_json) {
-                // 确保 total_size 不为 None
-                if data_unit.total_size.is_none() {
-                    if let Ok(metadata) = tokio::fs::metadata(&cache_path).await {
-                        data_unit.set_total_size(metadata.len());
-                    }
-                }
+            // 合并重叠的范围
+            let mut i = 0;
+            while i < data_unit.ranges.len() - 1 {
+                let current = data_unit.ranges[i];
+                let next = data_unit.ranges[i + 1];
                 
-                let mut cache_map = self.cache_map.write().await;
-                cache_map.insert(cache_path, data_unit);
-                log_info!("Cache", "加载缓存状态: {}", url);
+                if current.1 + 1 >= next.0 {
+                    data_unit.ranges[i] = (current.0, next.1.max(current.1));
+                    data_unit.ranges.remove(i + 1);
+                } else {
+                    i += 1;
+                }
             }
         }
         
         Ok(())
     }
-}
-
-impl Default for UnitPool {
-    fn default() -> Self {
-        Self::new()
+    
+    pub async fn ensure_file_size(&self, path: &str, size: u64) -> Result<()> {
+        let path = PathBuf::from(path);
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            fs::File::create(&path).await?;
+        }
+        
+        let metadata = fs::metadata(&path).await?;
+        if metadata.len() < size {
+            fs::File::open(&path).await?.set_len(size).await?;
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn get_cache_state(&self, url: &str) -> Result<Option<CacheState>> {
+        let state_path = CONFIG.get_cache_state(url)?;
+        
+        if let Ok(state_json) = fs::read_to_string(&state_path).await {
+            match serde_json::from_str::<CacheState>(&state_json) {
+                Ok(state) => Ok(Some(state)),
+                Err(_) => Ok(None),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+    
+    pub async fn update_cache_state(&self, url: &str, state: &CacheState) -> Result<()> {
+        let state_path = CONFIG.get_cache_state(url)?;
+        let state_json = serde_json::to_string_pretty(state)?;
+        fs::write(&state_path, state_json).await?;
+        Ok(())
     }
 } 

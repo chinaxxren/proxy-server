@@ -65,23 +65,9 @@ impl Logger {
 }
 
 #[macro_export]
-macro_rules! log_info {
-    ($module:expr, $($arg:tt)*) => ({
-        $crate::utils::Logger::info($module, format_args!($($arg)*))
-    })
-}
-
-#[macro_export]
 macro_rules! log_warn {
     ($module:expr, $($arg:tt)*) => ({
         $crate::utils::Logger::warn($module, format_args!($($arg)*))
-    })
-}
-
-#[macro_export]
-macro_rules! log_error {
-    ($module:expr, $($arg:tt)*) => ({
-        $crate::utils::Logger::error($module, format_args!($($arg)*))
     })
 }
 
