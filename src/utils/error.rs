@@ -74,3 +74,15 @@ impl From<serde_json::Error> for ProxyError {
     }
 }
 
+impl From<hyper::http::Error> for ProxyError {
+    fn from(err: hyper::http::Error) -> Self {
+        ProxyError::Request(err.to_string())
+    }
+}
+
+impl From<hyper::header::ToStrError> for ProxyError {
+    fn from(err: hyper::header::ToStrError) -> Self {
+        ProxyError::Request(err.to_string())
+    }
+}
+

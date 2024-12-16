@@ -20,6 +20,8 @@ lazy_static = "1.4"
 bytes = "1.3.0"
 futures-util = "0.3.31"
 tokio-stream = { version = "0.1" }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.2"
 
 [[example]]
 name = "video_request"
@@ -40,3 +42,7 @@ path = "src/examples/data_request.rs"
 [[example]]
 name = "https_request"
 path = "src/examples/https_request.rs"
+
+[[example]]
+name = "mixed_source_test"
+path = "src/examples/mixed_source_test.rs"

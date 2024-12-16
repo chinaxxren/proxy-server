@@ -1,6 +1,7 @@
 use crate::data_request::DataRequest;
 use crate::utils::error::{ProxyError, Result};
 use crate::{log_error, log_info};
+use crate::cache::SizeChecker;
 use hyper::client::HttpConnector;
 use hyper::header::{CONTENT_LENGTH, CONTENT_RANGE};
 use hyper::{Body, Client, Response};
@@ -10,17 +11,20 @@ pub struct NetSource {
     url: String,
     range: String,
     client: Client<HttpsConnector<HttpConnector>>,
+    size_checker: SizeChecker,
 }
 
 impl NetSource {
     pub fn new(url: &str, range: &str) -> Self {
         let https = HttpsConnector::new();
         let client = Client::builder().build::<_, hyper::Body>(https);
+        let size_checker = SizeChecker::new();
 
         Self {
             url: url.to_string(),
             range: range.to_string(),
             client,
+            size_checker,
         }
     }
 
@@ -41,7 +45,7 @@ impl NetSource {
                     return Err(ProxyError::Request("HTTP request failed".to_string()));
                 }
 
-                // 从响应头中获取文件总大小
+                // 获取文件总大小
                 let total_size = if let Some(content_range) = resp.headers().get(CONTENT_RANGE) {
                     if let Ok(range_str) = content_range.to_str() {
                         if let Some(size_str) = range_str.split('/').last() {
@@ -59,7 +63,11 @@ impl NetSource {
                         .and_then(|v| v.parse::<u64>().ok())
                         .unwrap_or(0)
                 } else {
-                    0
+                    // 如果响应头中没有大小信息，尝试使用 size_checker 获取
+                    match self.size_checker.check_file_size(&self.url).await {
+                        Ok(size) => size,
+                        Err(_) => 0,
+                    }
                 };
 
                 // 如果是无限长度的请求，更新range字符串

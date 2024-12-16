@@ -18,7 +18,7 @@ impl<'a> DataReader<'a> {
     }
 
     pub async fn read(&self) -> Result<Vec<u8>> {
-        let file_path = CONFIG.get_cache_path(self.url);
+        let file_path = CONFIG.get_cache_file(self.url);
         let mut file = File::open(&file_path).await?;
         
         let (start, end) = parse_range(self.range)?;

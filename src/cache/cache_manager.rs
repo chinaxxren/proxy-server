@@ -16,65 +16,44 @@ impl CacheManager {
         Self { unit_pool }
     }
 
-    pub async fn merge_files_if_needed(&self, url: &str) -> Result<()> {
-        let cache = self.unit_pool.cache_map.read().await;
-        if let Some(ranges) = cache.get(url) {
-            let merged = merge_ranges(ranges.clone());
-            drop(cache); // 释放锁
-            let mut cache = self.unit_pool.cache_map.write().await;
-            if let Some(entry) = cache.get_mut(url) {
-                *entry = merged;
-            }
-        }
-        Ok(())
-    }
-
     pub async fn clean_cache(&self) -> Result<()> {
         log_info!("Cache", "开始清理缓存...");
         let mut total_size = 0;
         let mut cleaned_count = 0;
         
+        // 获取所有缓存的文件路径
         let cache = self.unit_pool.cache_map.read().await;
-        let urls: Vec<String> = cache.keys().cloned().collect();
+        let cache_paths: Vec<String> = cache.keys().cloned().collect();
         drop(cache);
         
-        for url in urls {
-            let file_path = CONFIG.get_cache_path(&url);
-            if let Ok(metadata) = tokio::fs::metadata(&file_path).await {
+        for cache_path in cache_paths {
+            if let Ok(metadata) = tokio::fs::metadata(&cache_path).await {
                 let file_size = metadata.len();
                 total_size += file_size;
                 
                 // 检查文件大小（超过100MB的文件）
                 if file_size > 1024 * 1024 * 100 {
-                    if let Err(e) = tokio::fs::remove_file(&file_path).await {
-                        log_error!("Cache", "删除文件失败 {}: {}", file_path.display(), e);
+                    if let Err(e) = tokio::fs::remove_file(&cache_path).await {
+                        log_error!("Cache", "删除文件失败 {}: {}", cache_path, e);
                         continue;
                     }
-                    let mut cache = self.unit_pool.cache_map.write().await;
-                    cache.remove(&url);
-                    cleaned_count += 1;
-                    log_info!("Cache", "删除大文件: {} ({} MB)", url, file_size / 1024 / 1024);
-                    continue;
-                }
-                
-                // 检查文件访问时间（超过24小时的文件）
-                if let Ok(time) = metadata.modified() {
-                    if time.elapsed().unwrap().as_secs() > 24 * 60 * 60 {
-                        if let Err(e) = tokio::fs::remove_file(&file_path).await {
-                            log_error!("Cache", "删除文件失败 {}: {}", file_path.display(), e);
-                            continue;
-                        }
-                        let mut cache = self.unit_pool.cache_map.write().await;
-                        cache.remove(&url);
-                        cleaned_count += 1;
-                        log_info!("Cache", "删除过期文件: {}", url);
+                    
+                    // 删除对应的状态文件
+                    let state_path = CONFIG.get_cache_state(&cache_path);
+                    if let Err(e) = tokio::fs::remove_file(&state_path).await {
+                        log_error!("Cache", "删除状态文件失败 {}: {}", state_path, e);
                     }
+                    
+                    let mut cache = self.unit_pool.cache_map.write().await;
+                    cache.remove(&cache_path);
+                    cleaned_count += 1;
+                    log_info!("Cache", "删除大文件: {} ({} MB)", cache_path, file_size / 1024 / 1024);
                 }
             }
         }
         
-        // 保存更新后的缓存状态
-        self.unit_pool.save_cache_state().await?;
+        // 清理过期缓存
+        self.unit_pool.clean_old_cache(24).await?; // 24小时过期
         
         log_info!(
             "Cache", 
@@ -87,17 +66,29 @@ impl CacheManager {
     }
 
     pub async fn validate_cache(&self, url: &str) -> Result<()> {
+        let cache_path = CONFIG.get_cache_file(url);
         let cache = self.unit_pool.cache_map.read().await;
-        if let Some(ranges) = cache.get(url) {
-            for &(start, end) in ranges.iter() {
-                let file_path = CONFIG.get_cache_path(url);
-                // 添加文件完整性校验
-                let metadata = tokio::fs::metadata(&file_path).await?;
-                if metadata.len() < end + 1 {
+        if let Some(data_unit) = cache.get(&cache_path) {
+            let cache_file = &data_unit.cache_file;
+            
+            // 检查文件是否存在
+            if !tokio::fs::try_exists(cache_file).await? {
+                return Err(ProxyError::Cache("缓存文件不存在".to_string()));
+            }
+
+            // 检查文件大小
+            let metadata = tokio::fs::metadata(cache_file).await?;
+            let file_size = metadata.len();
+
+            // 检查每个缓存区间
+            for &(start, end) in &data_unit.ranges {
+                // 检查区间是否超出文件大小
+                if end >= file_size {
                     return Err(ProxyError::Cache("缓存文件不完整".to_string()));
                 }
-                // 添加数据校验和验证
-                if !self.verify_data_checksum(&file_path, start, end).await? {
+
+                // 验证区间数据
+                if !self.verify_range_data(cache_file, start, end).await? {
                     return Err(ProxyError::Cache("缓存数据校验失败".to_string()));
                 }
             }
@@ -105,42 +96,39 @@ impl CacheManager {
         Ok(())
     }
 
-    async fn verify_data_checksum(&self, path: &std::path::Path, start: u64, end: u64) -> Result<bool> {
+    async fn verify_range_data(&self, path: &str, start: u64, end: u64) -> Result<bool> {
         let mut file = tokio::fs::File::open(path).await?;
         file.seek(SeekFrom::Start(start)).await?;
         
         let mut buffer = vec![0; (end - start + 1) as usize];
-        file.read_exact(&mut buffer).await?;
-
-        // 检查数据有效性
-        if buffer.is_empty() {
-            return Err(ProxyError::Cache("缓存数据为空".to_string()));
+        if let Err(e) = file.read_exact(&mut buffer).await {
+            log_error!("Cache", "读取缓存数据失败: {}", e);
+            return Ok(false);
         }
 
-        // 检查数据完整性
-        if buffer.len() as u64 != (end - start + 1) {
-            return Err(ProxyError::Cache("缓存数据长度不匹配".to_string()));
-        }
-
+        // 这里可以添加数据完整性校验，比如校验和
         Ok(true)
     }
-}
 
-fn merge_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
-    if ranges.is_empty() {
-        return ranges;
-    }
-    ranges.sort_by_key(|k| k.0);
-    let mut merged = Vec::new();
-    let mut current = ranges[0];
-    for &(start, end) in ranges.iter().skip(1) {
-        if start <= current.1 + 1 {
-            current.1 = current.1.max(end);
-        } else {
-            merged.push(current);
-            current = (start, end);
+    pub async fn optimize_cache(&self, url: &str) -> Result<()> {
+        let cache_path = CONFIG.get_cache_file(url);
+        let mut cache = self.unit_pool.cache_map.write().await;
+        if let Some(data_unit) = cache.get_mut(&cache_path) {
+            // 获取所有区间
+            let ranges = data_unit.ranges.clone();
+            
+            // 清空现有区间
+            data_unit.ranges.clear();
+            
+            // 重新添加并合并区间
+            for (start, end) in ranges {
+                data_unit.add_range(start, end);
+            }
+            
+            // 保存更新后的状态
+            drop(cache);
+            self.unit_pool.save_cache_state(url).await?;
         }
+        Ok(())
     }
-    merged.push(current);
-    merged
 }
