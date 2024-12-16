@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder().build::<_, hyper::Body>(https);
 
     // 测试 HTTPS URL
-    let https_url = "https://www.rust-lang.org/static/images/rust-logo-blk.svg";
+    let https_url = "https://media.w3.org/2010/05/sintel/trailer.mp4";
 
     log_info!("Example", "发送 HTTPS 请求: {}", https_url);
     let req = Request::builder()
