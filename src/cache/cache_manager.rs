@@ -1,8 +1,8 @@
-use crate::cache::unit_pool::UnitPool;
-use crate::utils::error::{ProxyError, Result};
-use crate::config::CONFIG;
-use crate::{log_info, log_error};
 use std::sync::Arc;
+use crate::utils::error::{Result, ProxyError};
+use crate::config::CONFIG;
+use crate::{log_error, log_info};
+use crate::cache::unit_pool::UnitPool;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use std::io::SeekFrom;
 
@@ -131,4 +131,4 @@ impl CacheManager {
         }
         Ok(())
     }
-}
+} 

@@ -1,27 +1,27 @@
-use crate::utils::error::{ProxyError, Result};
-use crate::utils::range::parse_range;
+use std::collections::HashMap;
+use tokio::sync::RwLock;
+use crate::utils::error::Result;
 use crate::cache::data_unit::DataUnit;
 use crate::config::CONFIG;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use crate::{log_info, log_error};
 use tokio::fs::File;
-use crate::{log_error, log_info};
+use tokio::io::AsyncSeekExt;
+use std::io::SeekFrom;
+use std::sync::Arc;
 
-#[derive(Debug, Clone)]
 pub struct UnitPool {
-    pub cache_map: Arc<RwLock<HashMap<String, DataUnit>>>,
+    pub cache_map: RwLock<HashMap<String, DataUnit>>,
 }
 
 impl UnitPool {
     pub fn new() -> Self {
         Self {
-            cache_map: Arc::new(RwLock::new(HashMap::new())),
+            cache_map: RwLock::new(HashMap::new()),
         }
     }
 
     pub async fn update_cache(&self, url: &str, range: &str) -> Result<()> {
-        let (start, end) = parse_range(range)?;
+        let (start, end) = crate::utils::range::parse_range(range)?;
         let cache_path = CONFIG.get_cache_file(url);
         
         let mut cache_map = self.cache_map.write().await;
@@ -30,7 +30,7 @@ impl UnitPool {
         });
         
         // 检查是否需要扩展文件大小
-        if data_unit.needs_allocation(end) {
+        if data_unit.needs_allocation(end + 1) {
             self.ensure_file_size(&data_unit.cache_file, end + 1).await?;
             data_unit.update_allocated_size(end + 1);
             
@@ -69,7 +69,7 @@ impl UnitPool {
         let cache_map = self.cache_map.read().await;
         
         if let Some(data_unit) = cache_map.get(&cache_path) {
-            if let Ok((start, end)) = parse_range(range) {
+            if let Ok((start, end)) = crate::utils::range::parse_range(range) {
                 return Ok(data_unit.contains_range(start, end));
             }
         }
@@ -82,7 +82,7 @@ impl UnitPool {
         let cache_map = self.cache_map.read().await;
         
         if let Some(data_unit) = cache_map.get(&cache_path) {
-            if let Ok((start, end)) = parse_range(range) {
+            if let Ok((start, end)) = crate::utils::range::parse_range(range) {
                 return Ok(data_unit.partially_contains_range(start, end));
             }
         }
@@ -114,7 +114,7 @@ impl UnitPool {
         if let Some(data_unit) = cache_map.get_mut(&cache_path) {
             data_unit.set_total_size(size);
             // 如果需要，预分配文件大小
-            if data_unit.needs_allocation(size - 1) {
+            if data_unit.needs_allocation(size) {
                 self.ensure_file_size(&data_unit.cache_file, size).await?;
                 data_unit.update_allocated_size(size);
             }
@@ -206,33 +206,10 @@ impl UnitPool {
         
         Ok(())
     }
-
-    // 加载所有缓存状态
-    pub async fn load_all_cache_states(&self) -> Result<()> {
-        let cache_dir = CONFIG.get_cache_root();
-        let mut dir = tokio::fs::read_dir(&cache_dir).await?;
-        
-        while let Ok(Some(entry)) = dir.next_entry().await {
-            let path = entry.path();
-            if let Some(ext) = path.extension() {
-                if ext == "json" {
-                    if let Ok(state_json) = tokio::fs::read_to_string(&path).await {
-                        if let Ok(data_unit) = serde_json::from_str::<DataUnit>(&state_json) {
-                            let mut cache_map = self.cache_map.write().await;
-                            cache_map.insert(data_unit.cache_file.clone(), data_unit);
-                        }
-                    }
-                }
-            }
-        }
-        
-        log_info!("Cache", "加载所有缓存状态完成");
-        Ok(())
-    }
 }
 
 impl Default for UnitPool {
     fn default() -> Self {
         Self::new()
     }
-}
+} 

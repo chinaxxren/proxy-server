@@ -12,14 +12,16 @@ use tokio::sync::Mutex;
 
 pub struct StreamProcessor {
     start_pos: u64,
+    end_pos: u64,
     url: String,
     unit_pool: Arc<UnitPool>,
 }
 
 impl StreamProcessor {
-    pub fn new(start_pos: u64, url: String, unit_pool: Arc<UnitPool>) -> Self {
+    pub fn new(start: u64, end: u64, url: String, unit_pool: Arc<UnitPool>) -> Self {
         Self {
-            start_pos,
+            start_pos: start,
+            end_pos: end,
             url,
             unit_pool,
         }
@@ -90,64 +92,97 @@ impl StreamProcessor {
         let url = self.url.clone();
         let unit_pool = self.unit_pool.clone();
         let start_pos = self.start_pos;
-        let end_pos = start_pos + 102400; // 请求范围的结束位置
+        let end_pos = self.end_pos;
 
-        log_info!("Stream", "开始处理混合源请求: {} -> {}", start_pos, end_pos);
+        log_info!("Stream", "开始处理混合源请求: {} -> {} (请求范围大小: {} bytes)", 
+                 start_pos, end_pos, end_pos - start_pos + 1);
 
         // 1. 处理缓存流
         let mut cached = Box::pin(cached_stream);
         tokio::spawn(async move {
             let mut buffer = Vec::new();
             let mut cached_bytes = 0u64;
+            let mut network_bytes = 0u64;
 
             // 先读取缓存数据
+            log_info!("Stream", "开始读取缓存数据...");
+            let mut current_pos = start_pos;
             while let Some(chunk) = cached.next().await {
                 match chunk {
                     Ok(data) => {
-                        if let Err(e) = sender.send_data(data.clone()).await {
-                            log_error!("Stream", "发送缓存数据失败: {}", e);
+                        // 检查是否已经读取到缓存边界
+                        if current_pos >= std::cmp::min(end_pos + 1, 102400) {
+                            break;
+                        }
+
+                        // 计算这次应该发送的数据长度
+                        let available_len = data.len() as u64;
+                        let remaining_needed = std::cmp::min(end_pos + 1, 102400) - current_pos;
+                        let to_send = std::cmp::min(available_len, remaining_needed) as usize;
+
+                        // 只发送需要的部分
+                        if let Err(e) = sender.send_data(data.slice(0..to_send)).await {
+                            log_error!("Stream", "发送缓存数据失败: {} (已发送: {} bytes)", e, cached_bytes);
                             return;
                         }
-                        cached_bytes += data.len() as u64;
-                        log_info!("Stream", "发送缓存数据: {} bytes, 总计: {}", data.len(), cached_bytes);
+                        cached_bytes += to_send as u64;
+                        current_pos += to_send as u64;
+                        
+                        log_info!("Stream", "发送缓存数据: {} bytes, 累计: {} bytes ({}%)", 
+                                to_send, cached_bytes, 
+                                (cached_bytes as f64 / (end_pos - start_pos + 1) as f64 * 100.0) as u64);
+
+                        if to_send < available_len {
+                            break;
+                        }
                     }
                     Err(e) => {
-                        log_error!("Stream", "读取缓存数据失败: {}", e);
+                        log_error!("Stream", "读取缓存数据失败: {} (已读取: {} bytes)", e, cached_bytes);
                         break;
                     }
                 }
             }
 
             // 2. 处理网络流
-            let network_start = start_pos + cached_bytes; // 从缓存结束的位置开始
-            let mut network_pos = network_start;
+            let network_start = start_pos + cached_bytes;
             
-            log_info!("Stream", "缓存数据处理完成，开始处理网络数据: {} -> {}", network_start, end_pos);
+            log_info!("Stream", "缓存数据处理完成 (总计: {} bytes), 开始处理网络数据: {} -> {}", 
+                     cached_bytes, network_start, end_pos);
 
             // 检查是否需要从网络获取数据
-            if network_pos < end_pos {
+            if network_start <= end_pos {
+                let mut network_pos = network_start;
+                let remaining_bytes = end_pos - network_start + 1;
+                
+                log_info!("Stream", "需要从网络获取数据: {} -> {} ({}bytes)", 
+                         network_start, end_pos, remaining_bytes);
+
                 while let Some(chunk) = network_stream.data().await {
                     match chunk {
                         Ok(data) => {
                             // 发送数据给客户端
                             if let Err(e) = sender.send_data(data.clone()).await {
-                                log_error!("Stream", "发送网络数据失败: {}", e);
+                                log_error!("Stream", "发送网络数据失败: {} (已发送: {} bytes)", e, network_bytes);
                                 break;
                             }
-                            log_info!("Stream", "发送网络数据: {} bytes, 位置: {}", data.len(), network_pos);
-
-                            // 缓存处理
+                            
+                            // 更新计数器和缓存
+                            network_bytes += data.len() as u64;
                             buffer.extend_from_slice(&data);
-                            network_pos += data.len() as u64;
+                            
+                            log_info!("Stream", "发送网络数据: {} bytes, 累计: {} bytes ({}%)", 
+                                    data.len(), network_bytes,
+                                    (network_bytes as f64 / remaining_bytes as f64 * 100.0) as u64);
 
+                            network_pos += data.len() as u64;
                             // 如果已经达到请求范围的结束位置，停止获取数据
-                            if network_pos >= end_pos {
-                                log_info!("Stream", "达到请求范围结束位置，停止获取数据");
+                            if network_pos > end_pos {
+                                log_info!("Stream", "达到请求范围结束位置，停止获取数据 (总计获取: {} bytes)", network_bytes);
                                 break;
                             }
                         }
                         Err(e) => {
-                            log_error!("Stream", "读取网络数据失败: {}", e);
+                            log_error!("Stream", "读取网络数据失败: {} (已获取: {} bytes)", e, network_bytes);
                             break;
                         }
                     }
@@ -155,24 +190,39 @@ impl StreamProcessor {
 
                 // 处理所有数据
                 if !buffer.is_empty() {
-                    let range = format!("bytes={}-{}", network_start, network_pos - 1);
-                    log_info!("Stream", "准备写入网络数据到缓存: {} -> {}", network_start, network_pos - 1);
-                    
+                    log_info!("Stream", "准备写入网络数据到缓存: {} bytes at position {}", buffer.len(), network_start);
+                    // 先写入缓存文件
                     if let Err(e) = Self::write_to_cache(
                         cache_writer,
                         network_start,
                         &buffer,
                     ).await {
-                        log_error!("Stream", "写入缓存失败: {}", e);
+                        log_error!("Stream", "写入缓存失败: {} (数据大小: {} bytes)", e, buffer.len());
                     } else {
-                        log_info!("Stream", "写入网络数据到缓存: {} bytes at position {}", buffer.len(), network_start);
-                        if let Err(e) = unit_pool.update_cache(&url, &range).await {
-                            log_error!("Stream", "更新缓存状态失败: {}", e);
-                        }
+                        log_info!("Stream", "成功写入网络数据到缓存: {} bytes at position {}", buffer.len(), network_start);
                     }
                 }
             } else {
-                log_info!("Stream", "无需从网络获取数据，缓存已完整");
+                log_info!("Stream", "无需从网络获取数据，缓存已完整 (缓存数据: {} bytes)", cached_bytes);
+            }
+
+            // 在所有数据处理完成后，更新缓存状态
+            let final_pos = if network_bytes > 0 {
+                network_start + network_bytes - 1
+            } else {
+                start_pos + cached_bytes - 1
+            };
+
+            log_info!("Stream", "数据处理完成 - 缓存: {} bytes, 网络: {} bytes, 总计: {} bytes", 
+                     cached_bytes, network_bytes, cached_bytes + network_bytes);
+
+            // 更新缓存状态以包含所有已处理的数据范围
+            let total_range = format!("bytes={}-{}", start_pos, final_pos);
+            if let Err(e) = unit_pool.update_cache(&url, &total_range).await {
+                log_error!("Stream", "更新缓存状态失败: {} (范围: {})", e, total_range);
+            } else {
+                log_info!("Stream", "成功更新最终缓存范围: {} -> {} (总计: {} bytes)", 
+                         start_pos, final_pos, final_pos - start_pos + 1);
             }
         });
 

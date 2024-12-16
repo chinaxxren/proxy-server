@@ -1,35 +1,46 @@
-use crate::utils::error::{ProxyError, Result};
+use crate::utils::error::{Result, ProxyError};
 
-/// 解析 HTTP Range 头部
-///
-/// # Arguments
-/// * `range` - Range 头部值，格式如 "bytes=0-1023" 或 "bytes=1024-"
-///
-/// # Returns
-/// * `Ok((start, end))` - 解析成功，返回起始和结束位置
-/// * `Err(ProxyError)` - 解析失败
 pub fn parse_range(range: &str) -> Result<(u64, u64)> {
+    // 处理空范围
+    if range.is_empty() {
+        return Ok((0, 0));
+    }
+
+    // 检查前缀
     if !range.starts_with("bytes=") {
-        return Err(ProxyError::Range("Invalid Range header format".to_string()));
+        return Err(ProxyError::Range("Invalid range format".to_string()));
     }
 
-    let bytes = &range[6..];
+    // 去掉 "bytes=" 前缀
+    let range_str = &range[6..];
     
-    // 处理 "bytes=数字-" 格式
-    if bytes.ends_with('-') {
-        return Err(ProxyError::Range("Invalid start position".to_string()));
-    }
-    
-    // 处理 "bytes=数字-数字" 格式
-    let parts: Vec<&str> = bytes.split('-').collect();
-    if parts.len() == 2 {
-        if let (Ok(start), Ok(end)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
-            if start <= end {
-                return Ok((start, end));
-            }
-            return Err(ProxyError::Range("Start position greater than end".to_string()));
-        }
+    // 处理 "0-" 格式
+    if range_str == "0-" {
+        return Ok((0, u64::MAX));
     }
 
-    Err(ProxyError::Range("Invalid Range header format".to_string()))
+    // 分割范围
+    let parts: Vec<&str> = range_str.split('-').collect();
+    if parts.len() != 2 {
+        return Err(ProxyError::Range("Invalid range format".to_string()));
+    }
+
+    // 解析开始位置
+    let start = parts[0].parse::<u64>()
+        .map_err(|_| ProxyError::Range("Invalid start position".to_string()))?;
+
+    // 解析结束位置
+    let end = if parts[1].is_empty() {
+        u64::MAX  // 如果结束位置为空，使用最大值
+    } else {
+        parts[1].parse::<u64>()
+            .map_err(|_| ProxyError::Range("Invalid end position".to_string()))?
+    };
+
+    // 验证范围
+    if start > end && end != u64::MAX {
+        return Err(ProxyError::Range("Invalid range: start > end".to_string()));
+    }
+
+    Ok((start, end))
 }

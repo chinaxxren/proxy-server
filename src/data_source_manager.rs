@@ -6,6 +6,7 @@ use crate::data_storage::DataStorage;
 use crate::stream_processor::StreamProcessor;
 use crate::utils::error::{ProxyError, Result};
 use crate::{log_error, log_info};
+use futures_util::stream::{IntoStream, TryStreamExt};
 use hyper::header::{HeaderMap, HeaderValue};
 use hyper::{Body, Request, Response};
 use std::sync::Arc;
@@ -13,13 +14,12 @@ use tokio::fs::File;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tokio_stream::StreamExt;
-use futures_util::stream::{TryStreamExt, IntoStream};
 
 #[derive(Debug)]
 pub enum DataSourceType {
-    FileOnly,   // 完全缓存，只使用文件源
+    FileOnly,    // 完全缓存，只使用文件源
     NetworkOnly, // 无缓存，只使用网络源
-    Mixed,      // 部分缓存，混合源
+    Mixed,       // 部分缓存，混合源
 }
 
 pub struct DataSourceManager {
@@ -34,7 +34,7 @@ impl DataSourceManager {
         let storage = DataStorage::new();
         let cache_manager = CacheManager::new(unit_pool.clone());
 
-        // 启动定期清理缓存的
+        // 启动定期清理缓存
         let cache_manager_clone = cache_manager.clone();
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(3600 * 24)); // 每24小时清理一次
@@ -68,7 +68,8 @@ impl DataSourceManager {
         log_info!("Source", "选择数据源: {:?}", source_type);
 
         // 3. 处理请求
-        self.process_request_with_source(&data_request, source_type).await
+        self.process_request_with_source(&data_request, source_type)
+            .await
     }
 
     async fn select_data_source(&self, url: &str, range: &str) -> Result<DataSourceType> {
@@ -91,6 +92,8 @@ impl DataSourceManager {
         // 4. 检查缓存状态
         let cache_map = self.unit_pool.cache_map.read().await;
         if let Some(data_unit) = cache_map.get(&cache_path) {
+            log_info!("Cache", "找到缓存单元: {:?}", data_unit);
+            
             // 检查文件大小
             if let Ok(metadata) = tokio::fs::metadata(&cache_path).await {
                 let file_size = metadata.len();
@@ -99,22 +102,21 @@ impl DataSourceManager {
                     drop(cache_map);
                     return Ok(DataSourceType::NetworkOnly);
                 }
-            }
 
-            // 检查是否完全缓存
-            if data_unit.contains_range(0, data_unit.total_size.unwrap_or(0)) {
-                log_info!("Cache", "完全缓存命中，使用文件源");
-                drop(cache_map);
-                return Ok(DataSourceType::FileOnly);
-            }
+                // 解析请求范围
+                let (start, end) = crate::utils::range::parse_range(range)?;
+                let actual_end = if end == 0 || end == u64::MAX {
+                    file_size - 1
+                } else {
+                    end
+                };
+                log_info!("Cache", "解析请求范围: {}-{} (实际结束位置: {})", start, end, actual_end);
 
-            // 解析请求范围
-            if let Ok((start, end)) = crate::utils::range::parse_range(range) {
-                if data_unit.contains_range(start, end) {
+                if self.check_cache_coverage(&data_unit.ranges, start, actual_end) {
                     log_info!("Cache", "请求范围完全缓存命中，使用文件源");
                     drop(cache_map);
                     return Ok(DataSourceType::FileOnly);
-                } else if data_unit.partially_contains_range(start, end) {
+                } else {
                     log_info!("Cache", "请求范围部分缓存命中，使用混合源");
                     drop(cache_map);
                     return Ok(DataSourceType::Mixed);
@@ -127,37 +129,65 @@ impl DataSourceManager {
         Ok(DataSourceType::NetworkOnly)
     }
 
-    async fn process_request_with_source(&self, req: &DataRequest, source_type: DataSourceType) -> Result<Response<Body>> {
+    async fn process_request_with_source(
+        &self,
+        req: &DataRequest,
+        source_type: DataSourceType,
+    ) -> Result<Response<Body>> {
         let url = req.get_url();
         let range = req.get_range();
 
         match source_type {
-            DataSourceType::FileOnly => {
-                self.process_file_source(url, range).await
-            }
-            DataSourceType::NetworkOnly => {
-                self.process_network_source(url, range).await
-            }
-            DataSourceType::Mixed => {
-                self.process_mixed_source(url, range).await
-            }
+            DataSourceType::FileOnly => self.process_file_source(url, range).await,
+            DataSourceType::NetworkOnly => self.process_network_source(url, range).await,
+            DataSourceType::Mixed => self.process_mixed_source(url, range).await,
         }
     }
 
     async fn process_file_source(&self, url: &str, range: &str) -> Result<Response<Body>> {
         // 1. 获取文件源
         let file_source = self.storage.get_file_source(url, range).await?;
+
+        // 2. 获取文件大小
+        let cache_path = CONFIG.get_cache_file(url);
+        let file_size = tokio::fs::metadata(&cache_path).await?.len();
+
+        // 3. 解析范围
+        let (start, end) = crate::utils::range::parse_range(range)?;
+        let actual_end = if end == u64::MAX || end == 0 {
+            file_size - 1
+        } else {
+            std::cmp::min(end, file_size - 1)
+        };
+
+        // 计算实际的数据长度
+        let content_length = actual_end - start + 1;
+
+        // 4. 获取文件流
         let stream = file_source.read_stream().await?;
-        
-        // 2. 创建响应流
+
+        // 5. 创建响应
         let (mut sender, body) = Body::channel();
-        
-        // 3. 处理流数据
+
+        // 6. 处理流数据
+        let mut total_sent = 0u64;
         tokio::spawn(async move {
             let mut stream = Box::pin(stream);
             while let Some(chunk) = stream.next().await {
                 match chunk {
-                    Ok(data) => {
+                    Ok(mut data) => {
+                        let remaining = content_length - total_sent;
+                        if remaining == 0 {
+                            break;
+                        }
+
+                        // 如果当前数据块大于剩余需要发送的数据量，只发送需要的部分
+                        if (total_sent + data.len() as u64) > content_length {
+                            let needed = remaining as usize;
+                            data.truncate(needed);
+                        }
+
+                        total_sent += data.len() as u64;
                         if let Err(e) = sender.send_data(data).await {
                             log_error!("Stream", "发送数据失败: {}", e);
                             break;
@@ -171,26 +201,31 @@ impl DataSourceManager {
             }
         });
 
-        // 4. 构建响应
+        // 7. 构建响应
         let mut response = Response::builder().status(206);
         let headers = self.build_response_headers(range, false);
-        
+
         for (key, value) in headers.iter() {
             response = response.header(key.as_str(), value);
         }
 
-        response = response.header("Content-Range", format!("bytes {}", range));
+        // 添加正确格式的 Content-Range 头
+        response = response.header(
+            "Content-Range",
+            format!("bytes {}-{}/{}", start, actual_end, file_size),
+        );
+
         let response = response
             .body(body)
             .map_err(|e| ProxyError::Response(e.to_string()))?;
-            
+
         Ok(response)
     }
 
     async fn process_network_source(&self, url: &str, range: &str) -> Result<Response<Body>> {
         // 1. 获取网络源
         let mut net_source = self.storage.get_net_source(url, range).await?;
-        
+
         // 2. 下载数据
         match net_source.download_stream().await {
             Ok((response, total_size)) => {
@@ -201,7 +236,7 @@ impl DataSourceManager {
                 } else {
                     0
                 };
-                
+
                 // 3. 准备缓存
                 let cache_path = CONFIG.get_cache_file(url);
                 // 确保缓存目录存在
@@ -210,22 +245,25 @@ impl DataSourceManager {
                 }
                 let file = File::create(&cache_path).await?;
                 let cache_writer = Arc::new(Mutex::new(Some(file)));
-                
+
                 // 设置文件总大小
                 if total_size > 0 {
                     self.unit_pool.set_total_size(url, total_size).await?;
                 }
-                
+
                 // 4. 创建流处理器
                 let processor = StreamProcessor::new(
                     start,
+                    if range.ends_with('-') { total_size - 1 } else { range.split('-').last().unwrap().parse::<u64>().unwrap() },
                     url.to_string(),
-                    self.unit_pool.clone(),
+                    self.unit_pool.clone()
                 );
-                
+
                 // 5. 处理响应体
-                let stream = processor.process_stream(response.into_body(), cache_writer).await?;
-                
+                let stream = processor
+                    .process_stream(response.into_body(), cache_writer)
+                    .await?;
+
                 // 6. 构建响应
                 let mut headers = self.build_response_headers(range, false);
                 if total_size > 0 {
@@ -240,7 +278,7 @@ impl DataSourceManager {
                         .unwrap(),
                     );
                 }
-                
+
                 let response = Response::builder()
                     .status(206)
                     .header("Content-Range", headers.get("Content-Range").unwrap())
@@ -260,14 +298,27 @@ impl DataSourceManager {
     async fn process_mixed_source(&self, url: &str, range: &str) -> Result<Response<Body>> {
         // 1. 解析请求范围
         let (start, end) = crate::utils::range::parse_range(range)?;
-        
-        // 2. 获取文件源和网络源
-        let mut net_source = self.storage.get_net_source(url, range).await?;
+        log_info!("Mixed", "开始处理混合源请求: {}-{} (原始range: {})", start, end, range);
+
+        // 2. 获取文件源
         let file_source = self.storage.get_file_source(url, range).await?;
-        
-        // 3. 准备缓存文件（使用 OpenOptions 以追加模式打开）
+
+        // 3. 检查缓存状态
         let cache_path = CONFIG.get_cache_file(url);
-        // 确保缓存目录存在
+        let cache_map = self.unit_pool.cache_map.read().await;
+        if let Some(data_unit) = cache_map.get(&cache_path) {
+            log_info!("Mixed", "当前缓存状态: {:?}", data_unit);
+            log_info!("Mixed", "缓存文件路径: {}", cache_path);
+            
+            if self.check_cache_coverage(&data_unit.ranges, start, end) {
+                log_info!("Mixed", "发现完全缓存命中，切换到文件源");
+                drop(cache_map);
+                return self.process_file_source(url, range).await;
+            }
+        }
+        drop(cache_map);
+
+        // 4. 准备缓存文件
         if let Some(parent) = std::path::Path::new(&cache_path).parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -278,37 +329,39 @@ impl DataSourceManager {
             .open(&cache_path)
             .await?;
         let cache_writer = Arc::new(Mutex::new(Some(file)));
-        
-        // 4. 尝试网络下载
+        log_info!("Mixed", "准备缓存文件: {}", cache_path);
+
+        // 5. 获取网络源并尝试下载
+        let mut net_source = self.storage.get_net_source(url, range).await?;
         match net_source.download_stream().await {
             Ok((response, total_size)) => {
-                // 5. 创建流处理器
+                log_info!("Mixed", "网络请求成功，文件总大小: {}", total_size);
+                
+                // 6. 创建流处理器
                 let processor = StreamProcessor::new(
                     start,
+                    end,
                     url.to_string(),
-                    self.unit_pool.clone(),
+                    self.unit_pool.clone()
                 );
-                
-                // 6. 获取并合并流
+
+                // 7. 获取并合并流
                 let cached_stream = file_source.read_stream().await?;
                 let network_stream = response.into_body();
+                log_info!("Mixed", "开始合并缓存流和网络流");
                 let merged_stream = processor
                     .merge_streams(cached_stream, network_stream, cache_writer)
                     .await?;
-                
-                // 7. 构建响应
+
+                // 8. 构建响应
                 let mut headers = self.build_response_headers(range, true);
                 headers.insert(
                     "Content-Range",
-                    HeaderValue::from_str(&format!(
-                        "bytes {}-{}/{}",
-                        start,
-                        end,
-                        total_size
-                    ))
-                    .unwrap(),
+                    HeaderValue::from_str(&format!("bytes {}-{}/{}", start, end, total_size))
+                        .unwrap(),
                 );
-                
+                log_info!("Mixed", "构建响应头: Content-Range: bytes {}-{}/{}", start, end, total_size);
+
                 let response = Response::builder()
                     .status(206)
                     .header("Content-Range", headers.get("Content-Range").unwrap())
@@ -316,11 +369,11 @@ impl DataSourceManager {
                     .header("Accept-Ranges", headers.get("Accept-Ranges").unwrap())
                     .body(merged_stream)
                     .map_err(|e| ProxyError::Response(e.to_string()))?;
+
                 Ok(response)
             }
-            Err(_) => {
-                // 8. 网络错误时尝试使用缓存
-                log_info!("Source", "网络错误，尝试使用缓存数据");
+            Err(e) => {
+                log_error!("Mixed", "网络请求失败: {}, 尝试使用缓存数据", e);
                 self.process_file_source(url, range).await
             }
         }
@@ -354,6 +407,53 @@ impl DataSourceManager {
         }
 
         headers
+    }
+
+    fn check_cache_coverage(&self, ranges: &[(u64, u64)], start: u64, end: u64) -> bool {
+        log_info!("Cache", "开始检查缓存覆盖 - 请范围: {}-{}", start, end);
+        
+        // 首先对范围进行排序
+        let mut sorted_ranges = ranges.to_vec();
+        sorted_ranges.sort_by_key(|&(start, _)| start);
+        log_info!("Cache", "已缓存的范围: {:?}", sorted_ranges);
+
+        // 检查每个缓存范围是否完全覆盖请求范围
+        for &(cache_start, cache_end) in &sorted_ranges {
+            if cache_start <= start && cache_end >= end {
+                log_info!("Cache", "找到完全覆盖: 缓存范围 {}-{} 覆盖请求范围 {}-{}", 
+                         cache_start, cache_end, start, end);
+                return true;
+            }
+        }
+
+        // 如果没有单个范围完全覆盖，则检查多个范围的组合覆盖
+        let mut current_pos = start;
+        for &(cache_start, cache_end) in &sorted_ranges {
+            // 如果当前缓存范围在目标位置之前，跳过
+            if cache_end < current_pos {
+                continue;
+            }
+            
+            // 如果当前缓存范围与目标位置有重叠
+            if cache_start <= current_pos {
+                // 更新当前位置到缓存范围的结束位置+1
+                current_pos = cache_end + 1;
+                log_info!("Cache", "部分覆盖: 更新当前位置到 {}", current_pos);
+                
+                // 如果已经覆盖了整个请求范围
+                if current_pos > end {
+                    log_info!("Cache", "通过多个范围完全覆盖");
+                    return true;
+                }
+            } else {
+                // 如果出现了空隙，说明不连续
+                break;
+            }
+        }
+
+        let result = current_pos > end;
+        log_info!("Cache", "最终检查结果: {} (当前位置: {})", result, current_pos);
+        result
     }
 }
 

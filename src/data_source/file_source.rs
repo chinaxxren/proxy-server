@@ -23,12 +23,14 @@ impl FileSource {
         Self { path, range: range.to_string() }
     }
 
-    pub async fn read_stream(&self) -> Result<impl Stream<Item = Result<Bytes>> + Send + 'static> {
-        let (start, end) = parse_range(&self.range)?;
+    pub async fn read_stream(&self) -> Result<impl Stream<Item = Result<Bytes>>> {
         let mut file = File::open(&self.path).await?;
         
         // 获取文件大小
         let file_size = file.metadata().await?.len();
+        
+        // 解析范围
+        let (start, end) = parse_range(&self.range)?;
         
         // 确保开始位置不超过文件大小
         if start >= file_size {
@@ -36,17 +38,23 @@ impl FileSource {
         }
         
         // 设置实际的结束位置
-        let end_pos = std::cmp::min(end + 1, file_size);
+        let end_pos = if end == u64::MAX {
+            file_size - 1
+        } else {
+            std::cmp::min(end, file_size - 1)
+        };
         
         // 移动到起始位置
         file.seek(SeekFrom::Start(start)).await?;
         
-        Ok(FileStream {
+        let stream = FileStream {
             file: Some(file),
-            buffer_size: 64 * 1024, // 64KB 缓冲区
+            buffer_size: 16384, // 16KB 缓冲区
             current_pos: start,
             end_pos,
-        })
+        };
+
+        Ok(stream)
     }
 
     pub async fn read_data(&self) -> Result<Vec<u8>> {
@@ -84,28 +92,33 @@ impl Stream for FileStream {
     type Item = Result<Bytes>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.current_pos >= self.end_pos {
+        // 1. 检查是否已经读取完毕
+        if self.current_pos > self.end_pos {
             return Poll::Ready(None);
         }
 
-        let remaining = self.end_pos - self.current_pos;
+        // 2. 计算剩余需要读取的字节数
+        let remaining = self.end_pos - self.current_pos + 1;
         let to_read = self.buffer_size.min(remaining as usize);
         let mut buffer = vec![0; to_read];
 
+        // 3. 获取文件引用
         let file = if let Some(file) = self.file.as_mut() {
             file
         } else {
             return Poll::Ready(None);
         };
 
+        // 4. 读取数据
         let read_future = file.read(&mut buffer);
         futures_util::pin_mut!(read_future);
 
         match read_future.poll(cx) {
             Poll::Ready(Ok(n)) if n > 0 => {
-                self.current_pos += n as u64;
+                let current = self.current_pos;
                 buffer.truncate(n);
-                log_info!("FileSource", "读取缓存: {} bytes at position {}", n, self.current_pos - n as u64);
+                self.current_pos += n as u64;
+                log_info!("FileSource", "读取缓存: {} bytes at position {}", n, current);
                 Poll::Ready(Some(Ok(Bytes::from(buffer))))
             }
             Poll::Ready(Ok(_)) => {
