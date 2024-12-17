@@ -113,7 +113,7 @@ impl Stream for FileStream {
             }
             Poll::Ready(Err(e)) => {
                 this.file.take();
-                Poll::Ready(Some(Err(ProxyError::Io(e.to_string()))))
+                Poll::Ready(Some(Err(ProxyError::IO(e.to_string()))))
             }
             Poll::Pending => Poll::Pending,
         }

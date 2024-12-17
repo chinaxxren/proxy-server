@@ -1,25 +1,29 @@
 #[macro_use]
-pub mod macros;
+extern crate lazy_static;
 
-pub mod config;
+#[macro_export]
+macro_rules! log_info {
+    ($tag:expr, $($arg:tt)*) => {
+        println!("[{} INFO {}] {}", 
+            chrono::Local::now().format("%H:%M:%S"),
+            $tag,
+            format!($($arg)*)
+        )
+    };
+}
+
 pub mod data_request;
 pub mod data_source;
-pub mod hls;
-pub mod server;
-pub mod utils;
-pub mod request_handler;
 pub mod data_source_manager;
 pub mod storage;
+pub mod utils;
+pub mod handlers;
+pub mod server;
+pub mod hls;
+pub mod request_handler;
 
-pub use config::{Config, CONFIG};
-pub use data_request::{DataRequest, RequestType};
-pub use data_source::{file_source::FileSource, net_source::NetSource};
-pub use hls::DefaultHlsHandler;
-pub use server::{run_server, ProxyServer};
-pub use utils::error::{Result, ProxyError};
-pub use request_handler::RequestHandler;
+pub use data_request::DataRequest;
 pub use data_source_manager::DataSourceManager;
-pub use storage::{StorageEngine, StorageManager, StorageManagerConfig, DiskStorage, StorageConfig};
 
 
 

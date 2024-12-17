@@ -4,11 +4,15 @@ use proxy_server::{log_info, server};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 启动代理服务器（在另一个线程中运行）
-    tokio::spawn(async {
-        log_info!("Example", "启动代理服务器...");
-        let server = server::ProxyServer::new(8080, "./cache");
-        server.start().await;
+    // 启动代理服务器
+    log_info!("Example", "启动代理服务器...");
+    let server = server::ProxyServer::new(8080, "./cache");
+    
+    // 在新线程中启动服务器
+    tokio::spawn(async move {
+        if let Err(e) = server.start().await {
+            eprintln!("服务器错误: {}", e);
+        }
     });
 
     // 等待服务器启动
