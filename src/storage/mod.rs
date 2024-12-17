@@ -5,7 +5,6 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 
 mod disk;
-mod compression;
 mod manager;
 
 pub use disk::DiskStorage;
@@ -43,7 +42,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             root_path: PathBuf::from("./cache"),
-            chunk_size: 8192, // 8KB 默认块���小
+            chunk_size: 8192, // 8KB 默认块大小
         }
     }
 } 

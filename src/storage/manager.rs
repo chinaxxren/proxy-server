@@ -15,7 +15,6 @@ struct StorageMetadata {
     key: String,
     size: u64,
     last_accessed: SystemTime,
-    compressed: bool,
 }
 
 /// 存储管理器配置
@@ -26,8 +25,6 @@ pub struct StorageManagerConfig {
     pub expiration_time: Duration,      // 缓存过期时间
     pub cleanup_interval: Duration,     // 清理检查间隔
     pub max_concurrent_ops: usize,      // 最大并发操作数
-    pub compression_threshold: u64,     // 压缩阈值（字节）
-    pub compression_level: u32,         // 压缩级别 (1-9)
 }
 
 impl Default for StorageManagerConfig {
@@ -38,8 +35,6 @@ impl Default for StorageManagerConfig {
             expiration_time: Duration::from_secs(24 * 60 * 60), // 24小时
             cleanup_interval: Duration::from_secs(60 * 60),     // 1小时
             max_concurrent_ops: 100,
-            compression_threshold: 1024 * 1024,       // 1MB
-            compression_level: 6,
         }
     }
 }
@@ -84,11 +79,8 @@ impl<E: StorageEngine + Send + Sync + 'static> StorageManager<E> {
         // 确保总空间足够
         self.ensure_space(size).await?;
 
-        // 计算校验和并可能进行压缩
-        let (processed_stream, checksum, compressed) = self.process_stream(stream).await?;
-
         // 写入数据
-        let bytes_written = self.engine.write_stream(key, processed_stream, range).await?;
+        let bytes_written = self.engine.write_stream(key, stream, range).await?;
 
         // 更新元数据
         let mut metadata = self.metadata.write().await;
@@ -96,7 +88,6 @@ impl<E: StorageEngine + Send + Sync + 'static> StorageManager<E> {
             key: key.to_string(),
             size: bytes_written,
             last_accessed: SystemTime::now(),
-            compressed,
         });
 
         // 更新当前使用的空间
@@ -107,7 +98,7 @@ impl<E: StorageEngine + Send + Sync + 'static> StorageManager<E> {
     }
 
     /// 读取数据流
-    pub async fn read(&self, key: &str, range: (u64, u64)) -> Result<impl Stream<Item = Result<Bytes>>> {
+    pub async fn read(&self, key: &str, range: (u64, u64)) -> Result<BoxStream<'static, Result<Bytes>>> {
         // 获取并发控制许可
         let _permit = self.semaphore.acquire().await?;
 
@@ -120,20 +111,7 @@ impl<E: StorageEngine + Send + Sync + 'static> StorageManager<E> {
         }
 
         // 读取数据
-        let stream = self.engine.read_stream(key, range).await?;
-
-        // 如果数据是压缩的，解压缩
-        let metadata = self.metadata.read().await;
-        if let Some(meta) = metadata.get(key) {
-            if meta.compressed {
-                // 返回解压缩的流
-                Ok(self.decompress_stream(stream))
-            } else {
-                Ok(stream)
-            }
-        } else {
-            Ok(stream)
-        }
+        self.engine.read_stream(key, range).await
     }
 
     /// 确保有足够的存储空间
@@ -205,61 +183,5 @@ impl<E: StorageEngine + Send + Sync + 'static> StorageManager<E> {
                 }
             }
         });
-    }
-
-    /// 处理输入流（计算校验和和压缩）
-    async fn process_stream<S>(&self, stream: S) -> Result<(BoxStream<'static, Result<Bytes>>, u32, bool)>
-    where
-        S: Stream<Item = Result<Bytes>> + Send + Unpin + 'static,
-    {
-        use futures::StreamExt;
-        
-        // 创建一个缓冲区来累积足够的数据以决定是否需要压缩
-        let mut buffer = Vec::new();
-        let mut stream = Box::pin(stream);
-        let mut total_size = 0u64;
-        let mut hasher = crc32fast::Hasher::new();
-        
-        // 收集初始数据以决定是否需要压缩
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            total_size += chunk.len() as u64;
-            hasher.update(&chunk);
-            buffer.extend_from_slice(&chunk);
-            
-            // 如果已经收集了足够的数据来做决定
-            if total_size >= self.config.compression_threshold {
-                break;
-            }
-        }
-        
-        // 决定是否需要压缩
-        let should_compress = total_size >= self.config.compression_threshold;
-        
-        // 创建一个新的流，包含缓冲的数据和剩余的输入流
-        let buffered_data = buffer.clone();
-        let buffered_stream = futures::stream::once(async move { Ok(Bytes::from(buffered_data)) })
-            .chain(stream);
-        
-        if should_compress {
-            // 创建压缩流
-            let compressed_stream = super::compression::CompressedStream::new(
-                buffered_stream,
-                self.config.compression_level
-            );
-            
-            Ok((compressed_stream.boxed(), hasher.finalize(), true))
-        } else {
-            Ok((Box::pin(buffered_stream), hasher.finalize(), false))
-        }
-    }
-
-    /// 解压缩流
-    fn decompress_stream<S>(&self, stream: S) -> BoxStream<'static, Result<Bytes>>
-    where
-        S: Stream<Item = Result<Bytes>> + Send + 'static,
-    {
-        use super::compression::DecompressedStream;
-        DecompressedStream::new(stream).boxed()
     }
 } 
