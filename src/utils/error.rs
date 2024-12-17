@@ -1,14 +1,16 @@
 use std::error::Error;
 use std::fmt;
 use std::io;
+use tokio::sync::AcquireError;
+use std::str::Utf8Error;
 
 /// 全局结果集类型
 pub type Result<T> = std::result::Result<T, ProxyError>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProxyError {
-    Http(hyper::Error),
-    Io(io::Error),
+    Http(String),
+    Io(String),
     Cache(String),
     DataParse(String),
     Network(String),
@@ -20,6 +22,10 @@ pub enum ProxyError {
     Response(String),
     SerdeError(String),
     Parse(String),
+    HttpHeader(String),
+    Utf8(String),
+    Json(String),
+    Semaphore(String),
 }
 
 impl fmt::Display for ProxyError {
@@ -38,29 +44,29 @@ impl fmt::Display for ProxyError {
             ProxyError::Response(s) => write!(f, "响应错误: {}", s),
             ProxyError::SerdeError(s) => write!(f, "序列化错误: {}", s),
             ProxyError::Parse(s) => write!(f, "解析错误: {}", s),
+            ProxyError::HttpHeader(s) => write!(f, "HTTP头错误: {}", s),
+            ProxyError::Utf8(s) => write!(f, "UTF-8错误: {}", s),
+            ProxyError::Json(s) => write!(f, "JSON错误: {}", s),
+            ProxyError::Semaphore(s) => write!(f, "信号量错误: {}", s),
         }
     }
 }
 
 impl Error for ProxyError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            ProxyError::Http(e) => Some(e),
-            ProxyError::Io(e) => Some(e),
-            _ => None,
-        }
+        None
     }
 }
 
 impl From<hyper::Error> for ProxyError {
     fn from(err: hyper::Error) -> Self {
-        ProxyError::Http(err)
+        ProxyError::Http(err.to_string())
     }
 }
 
 impl From<io::Error> for ProxyError {
     fn from(err: io::Error) -> Self {
-        ProxyError::Io(err)
+        ProxyError::Io(err.to_string())
     }
 }
 
@@ -85,6 +91,18 @@ impl From<hyper::http::Error> for ProxyError {
 impl From<hyper::header::ToStrError> for ProxyError {
     fn from(err: hyper::header::ToStrError) -> Self {
         ProxyError::Request(err.to_string())
+    }
+}
+
+impl From<Utf8Error> for ProxyError {
+    fn from(err: Utf8Error) -> Self {
+        ProxyError::Utf8(err.to_string())
+    }
+}
+
+impl From<AcquireError> for ProxyError {
+    fn from(_: AcquireError) -> Self {
+        ProxyError::Semaphore("无法获取信号量".to_string())
     }
 }
 

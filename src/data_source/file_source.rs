@@ -1,16 +1,14 @@
 use crate::utils::parse_range;
 use crate::utils::error::{Result, ProxyError};
 use bytes::Bytes;
-use futures_util::stream::Stream;
+use futures::Stream;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use std::io::SeekFrom;
 use std::pin::Pin;
-use futures_util::Future;
+use futures::Future;
 use std::task::{Context, Poll};
-use crate::{log_info, log_error};
 use std::path::PathBuf;
-use crate::CONFIG; // 导入 CONFIG
 
 #[derive(Debug, Clone)]
 pub struct FileSource {
@@ -35,14 +33,14 @@ impl FileSource {
     }
 
     pub async fn read_stream(&self) -> Result<impl Stream<Item = Result<Bytes>>> {
-        // 确保文件存在
-        let cache_file = CONFIG.get_cache_file(&self.path)?;
-        if !tokio::fs::try_exists(&cache_file).await? {
-            return Err(ProxyError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "File not found")));
-        }
-        
-        let file = tokio::fs::File::open(cache_file).await?;
-        Ok(FileStream::new(file, self.range.clone()))
+        let file = File::open(&self.path).await?;
+        let (start, end) = parse_range(&self.range)?;
+        Ok(FileStream {
+            file: Some(file),
+            buffer_size: 8192,
+            current_pos: start,
+            end_pos: end,
+        })
     }
 
     pub async fn read_data(&self) -> Result<Vec<u8>> {
@@ -79,19 +77,21 @@ pub struct FileStream {
 impl Stream for FileStream {
     type Item = Result<Bytes>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        
         // 1. 检查是否已经读取完毕
-        if self.current_pos > self.end_pos {
+        if this.current_pos > this.end_pos {
             return Poll::Ready(None);
         }
 
         // 2. 计算剩余需要读取的字节数
-        let remaining = self.end_pos - self.current_pos + 1;
-        let to_read = self.buffer_size.min(remaining as usize);
+        let remaining = this.end_pos - this.current_pos + 1;
+        let to_read = this.buffer_size.min(remaining as usize);
         let mut buffer = vec![0; to_read];
 
         // 3. 获取文件引用
-        let file = if let Some(file) = self.file.as_mut() {
+        let file = if let Some(file) = this.file.as_mut() {
             file
         } else {
             return Poll::Ready(None);
@@ -99,38 +99,23 @@ impl Stream for FileStream {
 
         // 4. 读取数据
         let read_future = file.read(&mut buffer);
-        futures_util::pin_mut!(read_future);
+        futures::pin_mut!(read_future);
 
         match read_future.poll(cx) {
             Poll::Ready(Ok(n)) if n > 0 => {
-                let current = self.current_pos;
                 buffer.truncate(n);
-                self.current_pos += n as u64;
-                log_info!("FileSource", "读取缓存: {} bytes at position {}", n, current);
+                this.current_pos += n as u64;
                 Poll::Ready(Some(Ok(Bytes::from(buffer))))
             }
             Poll::Ready(Ok(_)) => {
-                self.file.take();
+                this.file.take();
                 Poll::Ready(None)
             }
             Poll::Ready(Err(e)) => {
-                log_error!("FileSource", "读取文件失败: {}", e);
-                self.file.take();
-                Poll::Ready(Some(Err(ProxyError::Io(e))))
+                this.file.take();
+                Poll::Ready(Some(Err(ProxyError::Io(e.to_string()))))
             }
             Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl FileStream {
-    pub fn new(file: File, range: String) -> Self {
-        let (start, end) = parse_range(&range).expect("Invalid range");
-        Self {
-            file: Some(file),
-            buffer_size: 1024, // 设置合适的缓冲区大小
-            current_pos: start,
-            end_pos: end,
         }
     }
 }
