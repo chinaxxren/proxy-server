@@ -11,6 +11,7 @@ pub type Result<T> = std::result::Result<T, ProxyError>;
 pub enum ProxyError {
     Cache(String),
     Network(String),
+    InvalidRange(String),
     Range(String),
     Request(String),
     Storage(String),
@@ -23,6 +24,7 @@ impl fmt::Display for ProxyError {
         match self {
             ProxyError::Cache(msg) => write!(f, "Cache error: {}", msg),
             ProxyError::Network(msg) => write!(f, "Network error: {}", msg),
+            ProxyError::InvalidRange(msg) => write!(f, "Invalid range error: {}", msg),
             ProxyError::Range(msg) => write!(f, "Range error: {}", msg),
             ProxyError::Request(msg) => write!(f, "Request error: {}", msg),
             ProxyError::Storage(msg) => write!(f, "Storage error: {}", msg),

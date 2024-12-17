@@ -1,5 +1,14 @@
-#[macro_use]
 extern crate lazy_static;
+
+pub mod data_source;
+pub mod handlers;
+pub mod storage;
+pub mod utils;
+pub mod data_request;
+pub mod data_source_manager;
+pub mod server;
+pub mod hls;
+pub mod request_handler;
 
 #[macro_export]
 macro_rules! log_info {
@@ -11,16 +20,6 @@ macro_rules! log_info {
         )
     };
 }
-
-pub mod data_request;
-pub mod data_source;
-pub mod data_source_manager;
-pub mod storage;
-pub mod utils;
-pub mod handlers;
-pub mod server;
-pub mod hls;
-pub mod request_handler;
 
 pub use data_request::DataRequest;
 pub use data_source_manager::DataSourceManager;

@@ -2,11 +2,12 @@ use std::sync::Arc;
 use std::pin::Pin;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use hyper::Body;
+use hyper::Response;
 use tokio::sync::mpsc;
 use crate::storage::{StorageManager, DiskStorage};
 use crate::utils::error::{Result, ProxyError};
 use crate::log_info;
+use crate::handlers::ResponseBuilder;
 
 pub struct CacheHandler {
     storage_manager: Arc<StorageManager<DiskStorage>>,
