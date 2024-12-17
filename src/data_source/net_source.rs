@@ -68,7 +68,7 @@ impl NetSource {
             let range_str = range.to_str()
                 .map_err(|_| ProxyError::Request("Invalid content range header".into()))?;
             // 可以添加进一步的范围验证
-            log_info!("Request", "Range header: {}", range_str);
+            log_info!("Request", "Content-Range: {}", range_str);
         }
     
         // 创建新的响应，使用可能更稳定的 Body 实现
